@@ -1,0 +1,9 @@
+[package]
+name = "flux-pcap-generator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pcap-file = "2.0"
+etherparse = "0.13"
+anyhow = "1.0"
