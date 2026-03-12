@@ -1,4 +1,4 @@
-use cucumber::{given, when, then, World};
+use cucumber::{given, then, when, World};
 use flux_pcap_injector::PcapInjector;
 use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 use std::alloc::System;
@@ -56,7 +56,10 @@ async fn check_ingestion(world: &mut EngineWorld) {
 async fn check_allocations(world: &mut EngineWorld) {
     if let Some(region) = world.alloc_region.take() {
         let stats = region.change();
-        assert_eq!(stats.allocations, 0, "Heap allocations detected in the hot path!");
+        assert_eq!(
+            stats.allocations, 0,
+            "Heap allocations detected in the hot path!"
+        );
     }
 }
 

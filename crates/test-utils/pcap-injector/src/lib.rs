@@ -4,9 +4,7 @@ use std::fs::File;
 use anyhow::{Result, Context};
 
 /// A synthetic NIC driver that maps PCAP packets to the PacketView trait.
-/// 
-/// Note: While the injector itself owns the raw_data Vec, the individual 
-/// packets emitted are zero-copy views (BorrowedPacketView) into that buffer.
+#[derive(Debug)]
 pub struct PcapInjector {
     raw_data: Vec<u8>,
     offsets: Vec<(usize, usize, u64)>, // (start, length, timestamp_ns)
@@ -26,7 +24,6 @@ impl PcapInjector {
             raw_data.extend_from_slice(&pkt.data);
             let end = raw_data.len();
             
-            // Convert pcap timestamp to nanoseconds
             let timestamp_ns = pkt.timestamp.as_nanos() as u64;
             offsets.push((start, end - start, timestamp_ns));
         }
@@ -34,8 +31,7 @@ impl PcapInjector {
         Ok(Self { raw_data, offsets })
     }
 
-    /// Returns a list of zero-copy views into the underlying PCAP buffer.
-    pub fn packets(&self) -> Vec<BorrowedPacketView> {
+    pub fn packets(&self) -> Vec<BorrowedPacketView<'_>> {
         self.offsets.iter().map(|&(start, len, ts)| {
             BorrowedPacketView {
                 data: &self.raw_data[start..start+len],
@@ -45,28 +41,20 @@ impl PcapInjector {
     }
 }
 
-/// A zero-copy view of a single packet in the PCAP buffer.
+#[derive(Debug)]
 pub struct BorrowedPacketView<'a> {
     data: &'a [u8],
     timestamp_ns: u64,
 }
 
 impl<'a> PacketView for BorrowedPacketView<'a> {
-    fn timestamp_ns(&self) -> u64 {
-        self.timestamp_ns
-    }
-
-    fn data(&self) -> &[u8] {
-        self.data
-    }
+    fn timestamp_ns(&self) -> u64 { self.timestamp_ns }
+    fn data(&self) -> &[u8] { self.data }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_zero_copy_mapping() {
-        // Placeholder for verification once fixtures are generated in TASK-304
     }
 }
