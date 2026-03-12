@@ -1,0 +1,10 @@
+[package]
+name = "flux-pcap-injector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+flux-engine-core = { path = "../../engine-core" }
+etherparse = "0.13"
+pcap-file = "2.0"
+anyhow = "1.0"
