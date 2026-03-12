@@ -8,4 +8,5 @@ Feature: Baseline Ingestion Connectivity
     And the adversarial trace "tests/fixtures/pcaps/baseline_empty.pcap"
     When the engine ingests all packets from the trace
     Then the ingestion count should be greater than 0
+    And no heap allocations should occur in the hot path
     And no Panics should occur
