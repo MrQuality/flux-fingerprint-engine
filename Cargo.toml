@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/engine-core",
+    "crates/test-utils/pcap-injector",
+    "crates/test-utils/pcap-generator",
+    "tests/integration-tests",
+]
+resolver = "2"

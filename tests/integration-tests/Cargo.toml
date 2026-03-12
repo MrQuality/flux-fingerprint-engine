@@ -1,0 +1,12 @@
+[package]
+name = "flux-integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flux-engine-core = { path = "../../crates/engine-core" }
+flux-pcap-injector = { path = "../../crates/test-utils/pcap-injector" }
+cucumber = "0.20"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+stats_alloc = "0.1"
