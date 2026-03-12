@@ -6,28 +6,18 @@ use std::alloc::System;
 #[global_allocator]
 static ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-#[derive(Debug, World)]
+#[derive(Debug, World, Default)]
 pub struct EngineWorld {
     pub injector: Option<PcapInjector>,
     pub packets_processed: usize,
     pub alloc_region: Option<Region<'static, System>>,
 }
 
-impl Default for EngineWorld {
-    fn default() -> Self {
-        Self {
-            injector: None,
-            packets_processed: 0,
-            alloc_region: None,
-        }
-    }
-}
-
 #[given(expr = "an initialized fingerprint engine")]
 async fn init_engine(world: &mut EngineWorld) {
     world.packets_processed = 0;
     // Start monitoring allocations
-    world.alloc_region = Some(Region::new(&ALLOC));
+    world.alloc_region = Some(Region::new(ALLOC));
 }
 
 #[given(expr = "the adversarial trace {string}")]
