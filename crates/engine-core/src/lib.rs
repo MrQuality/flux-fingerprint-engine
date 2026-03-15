@@ -1,9 +1,11 @@
+pub mod scratchpad;
+
 /// Zero-copy abstraction for packet data derived from hardware-backed buffers.
 pub trait PacketView {
     fn timestamp_ns(&self) -> u64;
     fn data(&self) -> &[u8];
-    fn ingress_ifindex(&self) -> Option<u32> { None }
-    fn rss_queue_id(&self) -> Option<u16> { None }
+    fn ingress_ifindex(&self) -> Option<u32>;
+    fn rss_queue_id(&self) -> Option<u16>;
 }
 
 /// Metadata extracted from the protocol envelope.
@@ -94,6 +96,18 @@ impl RssValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockPacket<'a> {
+        data: &'a [u8],
+        ts: u64,
+    }
+
+    impl<'a> PacketView for MockPacket<'a> {
+        fn timestamp_ns(&self) -> u64 { self.ts }
+        fn data(&self) -> &[u8] { self.data }
+        fn ingress_ifindex(&self) -> Option<u32> { None }
+        fn rss_queue_id(&self) -> Option<u16> { None }
+    }
 
     #[test]
     fn test_ipv4_l4_location() {

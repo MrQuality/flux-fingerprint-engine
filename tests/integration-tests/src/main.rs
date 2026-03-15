@@ -37,8 +37,9 @@ async fn load_trace(world: &mut EngineWorld, path: String) {
 #[when(expr = "the engine ingests a packet from the trace")]
 async fn ingest_single_packet(world: &mut EngineWorld) {
     if let Some(ref injector) = world.injector {
-        if let Some(packet) = injector.packets().first() {
+        if let Some(packet) = injector.get_packet(0) {
             world.last_metadata = (packet.ingress_ifindex(), packet.rss_queue_id(), packet.timestamp_ns());
+            world.adversarial_packet = packet.data().to_vec();
             world.packets_processed = 1;
         }
     }
@@ -60,26 +61,33 @@ async fn check_timestamp(world: &mut EngineWorld) {
 
 #[given(expr = "a simulated high-throughput packet stream")]
 async fn init_high_throughput(world: &mut EngineWorld) {
-    world.injector = Some(PcapInjector::new("../fixtures/pcaps/baseline_empty.pcap").unwrap());
+    let pcap_path = if std::path::Path::new("tests/fixtures/pcaps/baseline_empty.pcap").exists() {
+        "tests/fixtures/pcaps/baseline_empty.pcap"
+    } else {
+        "../fixtures/pcaps/baseline_empty.pcap"
+    };
+    world.injector = Some(PcapInjector::new(pcap_path).unwrap());
 }
 
 #[when(expr = "the engine ingests 1000 packets")]
 async fn ingest_burst(world: &mut EngineWorld) {
     if let Some(ref injector) = world.injector {
-        let packets = injector.packets();
-        for pkt in packets.iter().take(1000) {
-            let _ = pkt.data();
-            world.packets_processed += 1;
+        let count = injector.packet_count();
+        let reg = Region::new(ALLOC);
+        for i in 0..1000 {
+            if let Some(pkt) = injector.get_packet(i % count) {
+                let _ = pkt.data();
+                world.packets_processed += 1;
+            }
         }
+        let change = reg.change();
+        assert_eq!(change.allocations, 0, "Heap allocations detected in burst loop: {:?}", change);
     }
 }
 
 #[then(expr = "no heap allocations should occur in the hot path")]
-async fn check_allocations(world: &mut EngineWorld) {
-    if let Some(ref reg) = world.alloc_region {
-        let change = reg.change();
-        assert_eq!(change.allocations, 0, "Heap allocations detected: {:?}", change);
-    }
+async fn check_allocations(_world: &mut EngineWorld) {
+    // Verified inside ingest_burst step for precision
 }
 
 #[then(expr = "the packet data must be a borrowed slice from the driver's memory pool")]
@@ -122,9 +130,15 @@ async fn verify_impairment_signal(world: &mut EngineWorld) {
     let outcome = EnvelopeScanner::locate_l4(&world.adversarial_packet);
     assert_eq!(outcome, IngestionOutcome::UnsupportedProtocol);
 }
-
 #[tokio::main]
 async fn main() {
-    EngineWorld::run("../features/baseline.feature").await;
-    EngineWorld::run("../features/ingestion.feature").await;
+    // Determine base path (assume running from workspace root or crate root)
+    let feature_path = if std::path::Path::new("tests/features").exists() {
+        "tests/features"
+    } else {
+        "../features"
+    };
+
+    EngineWorld::run(&format!("{}/baseline.feature", feature_path)).await;
+    EngineWorld::run(&format!("{}/ingestion.feature", feature_path)).await;
 }

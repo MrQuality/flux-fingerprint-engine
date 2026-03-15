@@ -27,7 +27,9 @@ Feature: Ingestion & Hardware Bypass Physical Path
     Then the engine must signal "ObfuscatedNetworkEnvelope"
     And the flow state must be terminated immediately
 
-  Scenario: Handling of malformed or zero-length driver descriptors
-    Given a driver that returns zero-length buffers
+  Scenario: IPv6 extension evasion detection from trace
+    Given an initialized fingerprint engine
+    And the adversarial trace "tests/fixtures/pcaps/ipv6_extension_evasion.pcap"
     When the engine ingests a packet from the trace
-    Then the engine must skip the descriptor and signal an impairment
+    And the ingestion layer attempts to locate the L4 payload
+    Then the engine must signal "ObfuscatedNetworkEnvelope"

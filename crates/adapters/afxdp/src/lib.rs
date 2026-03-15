@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::os::unix::io::RawFd;
 #[cfg(target_os = "linux")]
 use libc::{mmap, munmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED, setsockopt, SOL_XDP, bind, sockaddr_xdp, AF_XDP, close};
+#[cfg(target_os = "linux")]
+use libbpf_sys::{xdp_desc, xdp_mmap_offsets, xdp_ring_offset, xdp_umem_reg};
 
 #[cfg(target_os = "linux")]
 pub const XDP_UMEM_REG: i32 = 3;
@@ -17,42 +19,6 @@ pub const XDP_TX_RING: i32 = 2;
 pub const XDP_UMEM_FILL_RING: i32 = 5;
 #[cfg(target_os = "linux")]
 pub const XDP_UMEM_COMPLETION_RING: i32 = 6;
-
-#[cfg(target_os = "linux")]
-#[repr(C)]
-pub struct xdp_umem_reg {
-    pub addr: u64,
-    pub len: u64,
-    pub chunk_size: u32,
-    pub headroom: u32,
-    pub flags: u32,
-}
-
-#[cfg(target_os = "linux")]
-#[repr(C)]
-pub struct xdp_desc {
-    pub addr: u64,
-    pub len: u32,
-    pub options: u32,
-}
-
-#[cfg(target_os = "linux")]
-#[repr(C)]
-pub struct xdp_ring_offset {
-    pub producer: u64,
-    pub consumer: u64,
-    pub desc: u64,
-    pub flags: u64,
-}
-
-#[cfg(target_os = "linux")]
-#[repr(C)]
-pub struct xdp_mmap_offsets {
-    pub rx: xdp_ring_offset,
-    pub tx: xdp_ring_offset,
-    pub fr: xdp_ring_offset,
-    pub cr: xdp_ring_offset,
-}
 
 #[cfg(target_os = "linux")]
 pub struct XskRing<T> {
@@ -67,7 +33,6 @@ pub struct XskRing<T> {
 
 #[cfg(target_os = "linux")]
 impl<T> XskRing<T> {
-    /// Maps a raw AF_XDP ring from the kernel using explicit layout offsets.
     pub unsafe fn map(fd: RawFd, mmap_offset: i64, size: usize, ring_offsets: &xdp_ring_offset) -> anyhow::Result<Self> {
         let ptr = mmap(
             std::ptr::null_mut(),
@@ -136,6 +101,7 @@ pub struct AfXdpDriver {
     pub completion_ring: XskRing<u64>,
     pub umem_base: *mut u8,
     pub umem_size: usize,
+    pub queue_id: u16,
 }
 
 #[cfg(target_os = "linux")]
@@ -189,7 +155,8 @@ impl AfXdpDriver {
                     data,
                     addr: desc.addr,
                     len: desc.len,
-                    timestamp_ns: 0,
+                    timestamp_ns: 0, // Hardware timestamping requires XDP_METADATA_KFUNC
+                    queue_id: self.queue_id,
                 };
             }
             
@@ -215,10 +182,13 @@ pub struct AfXdpPacketView<'a> {
     pub addr: u64,
     pub len: u32,
     pub timestamp_ns: u64,
+    pub queue_id: u16,
 }
 
 #[cfg(target_os = "linux")]
 impl<'a> PacketView for AfXdpPacketView<'a> {
     fn timestamp_ns(&self) -> u64 { self.timestamp_ns }
     fn data(&self) -> &[u8] { self.data }
+    fn ingress_ifindex(&self) -> Option<u32> { None } // Placeholder for ifindex
+    fn rss_queue_id(&self) -> Option<u16> { Some(self.queue_id) }
 }

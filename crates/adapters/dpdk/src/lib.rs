@@ -42,6 +42,21 @@ impl PacketView for DpdkMbufView {
             slice::from_raw_parts(data_ptr, mbuf.data_len as usize)
         }
     }
+
+    fn ingress_ifindex(&self) -> Option<u32> {
+        unsafe {
+            if self.mbuf_ptr.is_null() { return None; }
+            Some((*self.mbuf_ptr).port as u32)
+        }
+    }
+
+    fn rss_queue_id(&self) -> Option<u16> {
+        unsafe {
+            if self.mbuf_ptr.is_null() { return None; }
+            // hash.rss is typically what we want here
+            Some(((*self.mbuf_ptr).hash % 65536) as u16)
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

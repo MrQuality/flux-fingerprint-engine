@@ -31,15 +31,20 @@ impl PcapInjector {
         Ok(Self { raw_data, offsets })
     }
 
-    pub fn packets(&self) -> Vec<BorrowedPacketView<'_>> {
-        self.offsets.iter().map(|&(start, len, ts)| {
+    /// Zero-allocation packet retrieval (CA-03 aligned).
+    pub fn get_packet(&self, index: usize) -> Option<BorrowedPacketView<'_>> {
+        self.offsets.get(index).map(|&(start, len, ts)| {
             BorrowedPacketView {
                 data: &self.raw_data[start..start+len],
                 timestamp_ns: ts,
-                ifindex: Some(1), // Simulated metadata
-                queue_id: Some(0), // Simulated metadata
+                ifindex: Some(1),
+                queue_id: Some(0),
             }
-        }).collect()
+        })
+    }
+
+    pub fn packet_count(&self) -> usize {
+        self.offsets.len()
     }
 }
 
@@ -56,11 +61,4 @@ impl<'a> PacketView for BorrowedPacketView<'a> {
     fn data(&self) -> &[u8] { self.data }
     fn ingress_ifindex(&self) -> Option<u32> { self.ifindex }
     fn rss_queue_id(&self) -> Option<u16> { self.queue_id }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_zero_copy_mapping() {
-    }
 }
