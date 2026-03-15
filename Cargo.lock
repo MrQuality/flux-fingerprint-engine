@@ -334,6 +334,9 @@ dependencies = [
 [[package]]
 name = "flux-engine-core"
 version = "0.1.0"
+dependencies = [
+ "stats_alloc",
+]
 
 [[package]]
 name = "flux-integration-tests"
