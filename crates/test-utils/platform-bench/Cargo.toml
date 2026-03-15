@@ -8,4 +8,6 @@ flux-engine-core = { path = "../../engine-core" }
 flux-pcap-generator = { path = "../../test-utils/pcap-generator" }
 anyhow = "1.0"
 rand = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 perf-event = "0.4"

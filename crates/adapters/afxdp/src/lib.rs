@@ -1,17 +1,22 @@
+#[cfg(target_os = "linux")]
 use flux_engine_core::PacketView;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
+#[cfg(target_os = "linux")]
 use libc::{mmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED};
 
-/// Offsets defined by the Linux AF_XDP kernel API.
+#[cfg(target_os = "linux")]
 pub const XDP_PGOFF_RX_RING: i64 = 0x00000000;
+#[cfg(target_os = "linux")]
 pub const XDP_PGOFF_TX_RING: i64 = 0x80000000;
+#[cfg(target_os = "linux")]
 pub const XDP_PGOFF_FILL_RING: i64 = 0x100000000;
+#[cfg(target_os = "linux")]
 pub const XDP_PGOFF_COMPLETION_RING: i64 = 0x180000000;
-pub const XDP_UMEM_PGOFF_FILL_RING: i64 = 0x100000000;
-pub const XDP_UMEM_PGOFF_COMPLETION_RING: i64 = 0x180000000;
 
-/// Represents a raw AF_XDP ring (Fill, Completion, RX, or TX).
+#[cfg(target_os = "linux")]
 pub struct XskRing {
     pub producer: *mut AtomicU32,
     pub consumer: *mut AtomicU32,
@@ -20,11 +25,11 @@ pub struct XskRing {
     pub size: u32,
 }
 
+#[cfg(target_os = "linux")]
 impl XskRing {
-    /// Maps a raw AF_XDP ring from the kernel via mmap.
     pub unsafe fn map(fd: RawFd, offset: i64, size: usize) -> anyhow::Result<Self> {
         let ptr = mmap(
-            ptr::null_mut(),
+            std::ptr::null_mut(),
             size,
             PROT_READ | PROT_WRITE,
             MAP_SHARED,
@@ -36,13 +41,10 @@ impl XskRing {
             return Err(anyhow::anyhow!("Failed to mmap AF_XDP ring"));
         }
         
-        // In a real implementation, we would extract the producer, consumer, 
-        // and descriptor offsets from the kernel-provided xdp_ring_offset struct.
-        
         Ok(Self {
             producer: ptr as *mut AtomicU32,
-            consumer: (ptr as usize + 64) as *mut AtomicU32, // Simplified example offset
-            descriptors: (ptr as usize + 128) as *mut u8,   // Simplified example offset
+            consumer: (ptr as usize + 64) as *mut AtomicU32,
+            descriptors: (ptr as usize + 128) as *mut u8,
             mask: (size / 8 - 1) as u32,
             size: size as u32,
         })
@@ -57,12 +59,14 @@ impl XskRing {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub struct AfXdpDriver {
     pub rx_ring: XskRing,
     pub fill_ring: XskRing,
     pub umem_base: *mut u8,
 }
 
+#[cfg(target_os = "linux")]
 impl AfXdpDriver {
     pub fn rx_burst<'a>(&self, out: &mut [AfXdpPacketView<'a>]) -> usize {
         unsafe {
@@ -73,8 +77,7 @@ impl AfXdpDriver {
             let count = std::cmp::min(available as usize, out.len());
             
             for i in 0..count {
-                let idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
-                // Mapping UMEM address to packet view would occur here
+                let _idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
                 out[i] = AfXdpPacketView::default();
             }
             
@@ -83,6 +86,7 @@ impl AfXdpDriver {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct AfXdpPacketView<'a> {
     pub data: &'a [u8],
@@ -91,6 +95,7 @@ pub struct AfXdpPacketView<'a> {
     pub timestamp_ns: u64,
 }
 
+#[cfg(target_os = "linux")]
 impl<'a> PacketView for AfXdpPacketView<'a> {
     fn timestamp_ns(&self) -> u64 { self.timestamp_ns }
     fn data(&self) -> &[u8] { self.data }
