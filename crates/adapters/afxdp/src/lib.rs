@@ -46,16 +46,25 @@ pub struct xdp_ring_offset {
 }
 
 #[cfg(target_os = "linux")]
-pub struct XskRing {
+#[repr(C)]
+pub struct xdp_mmap_offsets {
+    pub rx: xdp_ring_offset,
+    pub tx: xdp_ring_offset,
+    pub fr: xdp_ring_offset,
+    pub cr: xdp_ring_offset,
+}
+
+#[cfg(target_os = "linux")]
+pub struct XskRing<T> {
     pub producer: *mut AtomicU32,
     pub consumer: *mut AtomicU32,
-    pub descriptors: *mut xdp_desc,
+    pub descriptors: *mut T,
     pub mask: u32,
     pub size: u32,
 }
 
 #[cfg(target_os = "linux")]
-impl XskRing {
+impl<T> XskRing<T> {
     pub unsafe fn map(fd: RawFd, mmap_offset: i64, size: usize, ring_offsets: &xdp_ring_offset) -> anyhow::Result<Self> {
         let ptr = mmap(
             std::ptr::null_mut(),
@@ -73,9 +82,9 @@ impl XskRing {
         Ok(Self {
             producer: (ptr as usize + ring_offsets.producer as usize) as *mut AtomicU32,
             consumer: (ptr as usize + ring_offsets.consumer as usize) as *mut AtomicU32,
-            descriptors: (ptr as usize + ring_offsets.desc as usize) as *mut xdp_desc,
-            mask: (size / std::mem::size_of::<xdp_desc>() - 1) as u32,
-            size: (size / std::mem::size_of::<xdp_desc>()) as u32,
+            descriptors: (ptr as usize + ring_offsets.desc as usize) as *mut T,
+            mask: (size / std::mem::size_of::<T>() - 1) as u32,
+            size: (size / std::mem::size_of::<T>()) as u32,
         })
     }
 
@@ -86,65 +95,18 @@ impl XskRing {
             (*self.consumer).store(current.wrapping_add(count), Ordering::Release);
         }
     }
-
-    pub unsafe fn produce_fill(&self, addrs: &[u64]) -> usize {
-        let prod = (*self.producer).load(Ordering::Relaxed);
-        let cons = (*self.consumer).load(Ordering::Acquire);
-        
-        let free = self.size.wrapping_sub(prod.wrapping_sub(cons));
-        let count = std::cmp::min(free as usize, addrs.len());
-        
-        for i in 0..count {
-            let idx = (prod.wrapping_add(i as u32)) & self.mask;
-            let desc_ptr = self.descriptors as *mut u64;
-            *desc_ptr.add(idx as usize) = addrs[i];
-        }
-        
-        (*self.producer).store(prod.wrapping_add(count as u32), Ordering::Release);
-        count
-    }
 }
 
 #[cfg(target_os = "linux")]
 pub struct AfXdpDriver {
     pub fd: RawFd,
-    pub rx_ring: XskRing,
-    pub fill_ring: XskRing,
+    pub rx_ring: XskRing<xdp_desc>,
+    pub fill_ring: XskRing<u64>,
+    pub completion_ring: XskRing<u64>,
     pub umem_base: *mut u8,
 }
 
-#[cfg(target_os = "linux")]
 impl AfXdpDriver {
-    pub unsafe fn register_umem(fd: RawFd, addr: *mut u8, len: u64) -> anyhow::Result<()> {
-        let reg = xdp_umem_reg {
-            addr: addr as u64,
-            len,
-            chunk_size: 4096,
-            headroom: 0,
-            flags: 0,
-        };
-        
-        if setsockopt(fd, SOL_XDP, XDP_UMEM_REG, &reg as *const _ as *const libc::c_void, std::mem::size_of::<xdp_umem_reg>() as u32) != 0 {
-            return Err(anyhow::anyhow!("Failed to register AF_XDP UMEM"));
-        }
-        
-        Ok(())
-    }
-
-    pub unsafe fn bind_socket(fd: RawFd, ifindex: u32, queue_id: u32) -> anyhow::Result<()> {
-        let mut sxdp: sockaddr_xdp = std::mem::zeroed();
-        sxdp.sxdp_family = AF_XDP as u16;
-        sxdp.sxdp_ifindex = ifindex;
-        sxdp.sxdp_queue_id = queue_id;
-        sxdp.sxdp_flags = 0; // Default to XDP_COPY if zero-copy is not requested/available
-        
-        if bind(fd, &sxdp as *const _ as *const libc::sockaddr, std::mem::size_of::<sockaddr_xdp>() as u32) != 0 {
-            return Err(anyhow::anyhow!("Failed to bind AF_XDP socket"));
-        }
-        
-        Ok(())
-    }
-
     pub fn rx_burst<'a>(&self, out: &mut [AfXdpPacketView<'a>]) -> usize {
         unsafe {
             let prod = (*self.rx_ring.producer).load(Ordering::Acquire);
