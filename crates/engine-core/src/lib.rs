@@ -72,15 +72,22 @@ pub struct RssValidator;
 impl RssValidator {
     /// Verifies if the provided RSS hash/queue distribution is consistent with 4-tuple hashing.
     /// 
-    /// This is used to satisfy CA-010 (RSS Entropy Verification).
+    /// CA-010: Validates that flows with different 4-tuples land on different queues.
     pub fn verify_entropy(packets: &[impl PacketView]) -> bool {
-        if packets.is_empty() { return true; }
+        if packets.len() < 2 { return true; }
         
-        // In a real implementation, this would extract 5-tuples and 
-        // verify that flows with the same IPs but different ports 
-        // land on different queue IDs.
+        let mut unique_queues = std::collections::HashSet::new();
         
-        true
+        for pkt in packets {
+            if let Some(qid) = pkt.rss_queue_id() {
+                unique_queues.insert(qid);
+            }
+        }
+        
+        // If we have a diverse set of packets but they all land on the same queue (1 unique queue),
+        // we lack entropy (e.g., NIC is only hashing on a single IP instead of 4-tuple).
+        // This is a simplified check assuming the input slice contains diverse 4-tuples.
+        unique_queues.len() > 1
     }
 }
 

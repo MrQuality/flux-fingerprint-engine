@@ -7,3 +7,6 @@ edition = "2021"
 flux-engine-core = { path = "../../engine-core" }
 libc = "0.2"
 anyhow = "1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dpdk-sys = "0.1"

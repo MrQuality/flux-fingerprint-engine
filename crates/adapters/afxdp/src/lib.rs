@@ -8,33 +8,42 @@ use std::os::unix::io::RawFd;
 use libc::{mmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED};
 
 #[cfg(target_os = "linux")]
-pub const XDP_PGOFF_RX_RING: i64 = 0x00000000;
+#[repr(C)]
+pub struct xdp_desc {
+    pub addr: u64,
+    pub len: u32,
+    pub options: u32,
+}
+
 #[cfg(target_os = "linux")]
-pub const XDP_PGOFF_TX_RING: i64 = 0x80000000;
-#[cfg(target_os = "linux")]
-pub const XDP_PGOFF_FILL_RING: i64 = 0x100000000;
-#[cfg(target_os = "linux")]
-pub const XDP_PGOFF_COMPLETION_RING: i64 = 0x180000000;
+#[repr(C)]
+pub struct xdp_ring_offset {
+    pub producer: u64,
+    pub consumer: u64,
+    pub desc: u64,
+    pub flags: u64,
+}
 
 #[cfg(target_os = "linux")]
 pub struct XskRing {
     pub producer: *mut AtomicU32,
     pub consumer: *mut AtomicU32,
-    pub descriptors: *mut u8,
+    pub descriptors: *mut xdp_desc,
     pub mask: u32,
     pub size: u32,
 }
 
 #[cfg(target_os = "linux")]
 impl XskRing {
-    pub unsafe fn map(fd: RawFd, offset: i64, size: usize) -> anyhow::Result<Self> {
+    /// Maps a raw AF_XDP ring from the kernel using explicit layout offsets.
+    pub unsafe fn map(fd: RawFd, mmap_offset: i64, size: usize, ring_offsets: &xdp_ring_offset) -> anyhow::Result<Self> {
         let ptr = mmap(
             std::ptr::null_mut(),
             size,
             PROT_READ | PROT_WRITE,
             MAP_SHARED,
             fd,
-            offset,
+            mmap_offset,
         );
         
         if ptr == MAP_FAILED {
@@ -42,11 +51,11 @@ impl XskRing {
         }
         
         Ok(Self {
-            producer: ptr as *mut AtomicU32,
-            consumer: (ptr as usize + 64) as *mut AtomicU32,
-            descriptors: (ptr as usize + 128) as *mut u8,
-            mask: (size / 8 - 1) as u32,
-            size: size as u32,
+            producer: (ptr as usize + ring_offsets.producer as usize) as *mut AtomicU32,
+            consumer: (ptr as usize + ring_offsets.consumer as usize) as *mut AtomicU32,
+            descriptors: (ptr as usize + ring_offsets.desc as usize) as *mut xdp_desc,
+            mask: (size / std::mem::size_of::<xdp_desc>() - 1) as u32,
+            size: (size / std::mem::size_of::<xdp_desc>()) as u32,
         })
     }
 
@@ -77,8 +86,18 @@ impl AfXdpDriver {
             let count = std::cmp::min(available as usize, out.len());
             
             for i in 0..count {
-                let _idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
-                out[i] = AfXdpPacketView::default();
+                let idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
+                let desc = &*self.rx_ring.descriptors.add(idx as usize);
+                
+                let data_ptr = self.umem_base.add(desc.addr as usize);
+                let data = std::slice::from_raw_parts(data_ptr, desc.len as usize);
+                
+                out[i] = AfXdpPacketView {
+                    data,
+                    addr: desc.addr,
+                    len: desc.len,
+                    timestamp_ns: 0, // In practice, extracted from XDP metadata if supported
+                };
             }
             
             count

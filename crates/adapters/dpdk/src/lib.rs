@@ -1,46 +1,72 @@
+#[cfg(target_os = "linux")]
 use flux_engine_core::PacketView;
+#[cfg(target_os = "linux")]
 use std::slice;
 
-/// Wrapper around a raw DPDK rte_mbuf.
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub struct rte_mbuf {
+    pub buf_addr: *mut u8,
+    pub buf_iova: u64,
+    pub data_off: u16,
+    pub refcnt: u16,
+    pub nb_segs: u16,
+    pub port: u16,
+    pub ol_flags: u64,
+    pub packet_type: u32,
+    pub pkt_len: u32,
+    pub data_len: u16,
+    pub vlan_tci: u16,
+    pub hash: u32,
+}
+
+#[cfg(target_os = "linux")]
 pub struct DpdkMbufView {
-    pub mbuf_ptr: *mut u8,
-    pub data_ptr: *const u8,
-    pub data_len: u32,
+    pub mbuf_ptr: *mut rte_mbuf,
     pub timestamp_ns: u64,
 }
 
+#[cfg(target_os = "linux")]
 impl PacketView for DpdkMbufView {
     fn timestamp_ns(&self) -> u64 {
         self.timestamp_ns
     }
 
     fn data(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.data_ptr, self.data_len as usize) }
+        unsafe {
+            if self.mbuf_ptr.is_null() {
+                return &[];
+            }
+            let mbuf = &*self.mbuf_ptr;
+            let data_ptr = mbuf.buf_addr.add(mbuf.data_off as usize);
+            slice::from_raw_parts(data_ptr, mbuf.data_len as usize)
+        }
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for DpdkMbufView {
     fn drop(&mut self) {
         // ADR-001 Mandate: Immediate Descriptor Release.
-        // This would call rte_pktmbuf_free(self.mbuf_ptr) in a linked DPDK environment.
+        // In a real build, we'd call `rte_pktmbuf_free(self.mbuf_ptr)` via dpdk-sys.
     }
 }
 
+#[cfg(target_os = "linux")]
 pub struct DpdkDriver {
     pub port_id: u16,
 }
 
+#[cfg(target_os = "linux")]
 impl DpdkDriver {
-    /// Polls the DPDK port for a new packet burst using a zero-allocation API.
-    /// 
-    /// CA-003: Accepts a mutable slice provided by the caller to avoid heap allocation.
     pub fn rx_burst<'a>(&self, out: &mut [DpdkMbufView]) -> usize {
-        let mut count = 0;
-        
-        // In a real implementation, this would call:
-        // let nb_rx = rte_eth_rx_burst(self.port_id, 0, mbufs.as_mut_ptr(), out.len() as u16);
-        // Then map nb_rx into the out slice.
-        
-        count
+        // In a real implementation:
+        // let mut mbuf_ptrs: [*mut rte_mbuf; 32] = [std::ptr::null_mut(); 32];
+        // let nb_rx = unsafe { rte_eth_rx_burst(self.port_id, 0, mbuf_ptrs.as_mut_ptr() as *mut *mut std::ffi::c_void, out.len() as u16) };
+        // for i in 0..nb_rx as usize {
+        //     out[i] = DpdkMbufView { mbuf_ptr: mbuf_ptrs[i], timestamp_ns: 0 };
+        // }
+        // return nb_rx as usize;
+        0
     }
 }

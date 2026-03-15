@@ -26,3 +26,8 @@ Feature: Ingestion & Hardware Bypass Physical Path
     When the ingestion layer attempts to locate the L4 payload
     Then the engine must signal "ObfuscatedNetworkEnvelope"
     And the flow state must be terminated immediately
+
+  Scenario: Handling of malformed or zero-length driver descriptors
+    Given a driver that returns zero-length buffers
+    When the engine ingests a packet from the trace
+    Then the engine must skip the descriptor and signal an impairment
