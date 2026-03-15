@@ -17,3 +17,59 @@ pub trait PacketView {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
+    use std::alloc::System;
+
+    #[global_allocator]
+    static ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+    struct MockPacket<'a> {
+        data: &'a [u8],
+        ts: u64,
+    }
+
+    impl<'a> PacketView for MockPacket<'a> {
+        fn timestamp_ns(&self) -> u64 {
+            self.ts
+        }
+        fn data(&self) -> &[u8] {
+            self.data
+        }
+    }
+
+    #[test]
+    fn test_packet_view_integrity() {
+        let raw = [0u8; 64];
+        let pkt = MockPacket {
+            data: &raw,
+            ts: 12345,
+        };
+
+        assert_eq!(pkt.data().len(), 64);
+        assert_eq!(pkt.timestamp_ns(), 12345);
+        assert_eq!(pkt.ingress_ifindex(), None);
+    }
+
+    #[test]
+    fn test_zero_allocation_hot_path() {
+        let reg = Region::new(ALLOC);
+        let raw = [0u8; 1024];
+        
+        // Simulated hot path loop
+        for i in 0..100 {
+            let pkt = MockPacket {
+                data: &raw,
+                ts: i as u64,
+            };
+            let _ = pkt.data();
+            let _ = pkt.timestamp_ns();
+        }
+
+        let change = reg.change();
+        assert_eq!(change.allocations, 0, "Heap allocations detected in PacketView hot path!");
+    }
+}
