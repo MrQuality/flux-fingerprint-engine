@@ -35,7 +35,7 @@ impl ForensicScratchpadPool {
             let mut current = mask.load(Ordering::Relaxed);
             while current != !0 {
                 let bit = (!current).trailing_zeros();
-                if bit >= 64 { break; } // Should not happen with current != !0
+                if bit >= 64 { break; } 
                 let next = current | (1 << bit);
                 match mask.compare_exchange_weak(current, next, Ordering::Acquire, Ordering::Relaxed) {
                     Ok(_) => return Some(i * 64 + bit as usize),

@@ -23,12 +23,9 @@ impl EnvelopeScanner {
     const MAX_IPV6_EXT_HEADERS: u8 = 8;
 
     /// Traverses the L3 headers to locate the L4 (TCP) offset.
-    /// 
-    /// Enforces LC_003 (Fail-Closed) on excessive IPv6 extension chains.
     pub fn locate_l4(packet: &[u8]) -> IngestionOutcome {
         if packet.len() < 14 { return IngestionOutcome::UnsupportedProtocol; }
         
-        // Basic Ethernet II check (skipping VLANs for simplicity in this baseline)
         let eth_type = u16::from_be_bytes([packet[12], packet[13]]);
         
         match eth_type {
@@ -38,7 +35,7 @@ impl EnvelopeScanner {
                 IngestionOutcome::Success { l4_offset: 14 + ihl }
             }
             0x86DD => { // IPv6
-                let mut offset = 14 + 40; // Eth + IPv6 Fixed Header
+                let mut offset = 14 + 40; 
                 let mut next_header = packet[14 + 6];
                 let mut ext_count = 0;
                 
@@ -72,24 +69,30 @@ impl EnvelopeScanner {
 pub struct RssValidator;
 
 impl RssValidator {
-    /// Verifies if the provided RSS hash/queue distribution is consistent with 4-tuple hashing.
-    /// 
-    /// CA-010: Validates that flows with different 4-tuples land on different queues.
+    /// CA-004: Audits distribution to ensure no single queue handles > 70% of a diverse burst.
     pub fn verify_entropy(packets: &[impl PacketView]) -> bool {
-        if packets.len() < 2 { return true; }
+        if packets.len() < 10 { return true; } 
         
-        let mut unique_queues = std::collections::HashSet::new();
+        let mut queue_counts = std::collections::HashMap::new();
         
         for pkt in packets {
             if let Some(qid) = pkt.rss_queue_id() {
-                unique_queues.insert(qid);
+                *queue_counts.entry(qid).or_insert(0) += 1;
             }
         }
         
-        // If we have a diverse set of packets but they all land on the same queue (1 unique queue),
-        // we lack entropy (e.g., NIC is only hashing on a single IP instead of 4-tuple).
-        // This is a simplified check assuming the input slice contains diverse 4-tuples.
-        unique_queues.len() > 1
+        if queue_counts.len() < 2 {
+            return false; 
+        }
+
+        let max_allowed = (packets.len() as f64 * 0.7) as usize;
+        for count in queue_counts.values() {
+            if *count > max_allowed {
+                return false; 
+            }
+        }
+        
+        true
     }
 }
 
@@ -112,22 +115,22 @@ mod tests {
     #[test]
     fn test_ipv4_l4_location() {
         let mut pkt = vec![0u8; 34];
-        pkt[12] = 0x08; pkt[13] = 0x00; // IPv4
-        pkt[14] = 0x45; // IHL = 5 (20 bytes)
+        pkt[12] = 0x08; pkt[13] = 0x00; 
+        pkt[14] = 0x45; 
         assert_eq!(EnvelopeScanner::locate_l4(&pkt), IngestionOutcome::Success { l4_offset: 34 });
     }
 
     #[test]
     fn test_ipv6_extension_limit() {
         let mut pkt = vec![0u8; 200];
-        pkt[12] = 0x86; pkt[13] = 0xDD; // IPv6
-        pkt[14+6] = 0; // Hop-by-Hop extension
+        pkt[12] = 0x86; pkt[13] = 0xDD; 
+        pkt[14+6] = 0; 
         
         let mut offset = 14 + 40;
-        for _ in 0..9 { // 9 extensions
+        for _ in 0..9 { 
             if offset + 8 > pkt.len() { break; }
-            pkt[offset] = 0; // Next is Hop-by-Hop
-            pkt[offset+1] = 0; // Length = 8 bytes
+            pkt[offset] = 0; 
+            pkt[offset+1] = 0; 
             offset += 8;
         }
         
