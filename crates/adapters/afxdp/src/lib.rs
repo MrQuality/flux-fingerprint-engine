@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
 #[cfg(target_os = "linux")]
-use libc::{mmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED, setsockopt, SOL_XDP, bind, sockaddr_xdp, AF_XDP};
+use libc::{mmap, munmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED, setsockopt, SOL_XDP, bind, sockaddr_xdp, AF_XDP, close};
 
 #[cfg(target_os = "linux")]
 pub const XDP_UMEM_REG: i32 = 3;
@@ -56,6 +56,8 @@ pub struct xdp_mmap_offsets {
 
 #[cfg(target_os = "linux")]
 pub struct XskRing<T> {
+    pub base_ptr: *mut libc::c_void,
+    pub map_size: usize,
     pub producer: *mut AtomicU32,
     pub consumer: *mut AtomicU32,
     pub descriptors: *mut T,
@@ -65,6 +67,7 @@ pub struct XskRing<T> {
 
 #[cfg(target_os = "linux")]
 impl<T> XskRing<T> {
+    /// Maps a raw AF_XDP ring from the kernel using explicit layout offsets.
     pub unsafe fn map(fd: RawFd, mmap_offset: i64, size: usize, ring_offsets: &xdp_ring_offset) -> anyhow::Result<Self> {
         let ptr = mmap(
             std::ptr::null_mut(),
@@ -80,6 +83,8 @@ impl<T> XskRing<T> {
         }
         
         Ok(Self {
+            base_ptr: ptr,
+            map_size: size,
             producer: (ptr as usize + ring_offsets.producer as usize) as *mut AtomicU32,
             consumer: (ptr as usize + ring_offsets.consumer as usize) as *mut AtomicU32,
             descriptors: (ptr as usize + ring_offsets.desc as usize) as *mut T,
@@ -95,6 +100,32 @@ impl<T> XskRing<T> {
             (*self.consumer).store(current.wrapping_add(count), Ordering::Release);
         }
     }
+
+    pub unsafe fn produce_fill(&self, addrs: &[u64]) -> usize {
+        let prod = (*self.producer).load(Ordering::Relaxed);
+        let cons = (*self.consumer).load(Ordering::Acquire);
+        
+        let free = self.size.wrapping_sub(prod.wrapping_sub(cons));
+        let count = std::cmp::min(free as usize, addrs.len());
+        
+        for i in 0..count {
+            let idx = (prod.wrapping_add(i as u32)) & self.mask;
+            let desc_ptr = self.descriptors as *mut u64;
+            *desc_ptr.add(idx as usize) = addrs[i];
+        }
+        
+        (*self.producer).store(prod.wrapping_add(count as u32), Ordering::Release);
+        count
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<T> Drop for XskRing<T> {
+    fn drop(&mut self) {
+        unsafe {
+            munmap(self.base_ptr, self.map_size);
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -104,9 +135,41 @@ pub struct AfXdpDriver {
     pub fill_ring: XskRing<u64>,
     pub completion_ring: XskRing<u64>,
     pub umem_base: *mut u8,
+    pub umem_size: usize,
 }
 
+#[cfg(target_os = "linux")]
 impl AfXdpDriver {
+    pub unsafe fn register_umem(fd: RawFd, addr: *mut u8, len: u64) -> anyhow::Result<()> {
+        let reg = xdp_umem_reg {
+            addr: addr as u64,
+            len,
+            chunk_size: 4096,
+            headroom: 0,
+            flags: 0,
+        };
+        
+        if setsockopt(fd, SOL_XDP, XDP_UMEM_REG, &reg as *const _ as *const libc::c_void, std::mem::size_of::<xdp_umem_reg>() as u32) != 0 {
+            return Err(anyhow::anyhow!("Failed to register AF_XDP UMEM"));
+        }
+        
+        Ok(())
+    }
+
+    pub unsafe fn bind_socket(fd: RawFd, ifindex: u32, queue_id: u32) -> anyhow::Result<()> {
+        let mut sxdp: sockaddr_xdp = std::mem::zeroed();
+        sxdp.sxdp_family = AF_XDP as u16;
+        sxdp.sxdp_ifindex = ifindex;
+        sxdp.sxdp_queue_id = queue_id;
+        sxdp.sxdp_flags = 0;
+        
+        if bind(fd, &sxdp as *const _ as *const libc::sockaddr, std::mem::size_of::<sockaddr_xdp>() as u32) != 0 {
+            return Err(anyhow::anyhow!("Failed to bind AF_XDP socket"));
+        }
+        
+        Ok(())
+    }
+
     pub fn rx_burst<'a>(&self, out: &mut [AfXdpPacketView<'a>]) -> usize {
         unsafe {
             let prod = (*self.rx_ring.producer).load(Ordering::Acquire);
@@ -131,6 +194,16 @@ impl AfXdpDriver {
             }
             
             count
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AfXdpDriver {
+    fn drop(&mut self) {
+        unsafe {
+            munmap(self.umem_base as *mut libc::c_void, self.umem_size);
+            close(self.fd);
         }
     }
 }
