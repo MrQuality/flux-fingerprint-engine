@@ -1,0 +1,9 @@
+[package]
+name = "flux-engine-afxdp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+flux-engine-core = { path = "../../engine-core" }
+libc = "0.2"
+anyhow = "1.0"
