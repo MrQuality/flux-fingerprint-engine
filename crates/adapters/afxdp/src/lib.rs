@@ -1,5 +1,15 @@
 use flux_engine_core::PacketView;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::os::unix::io::RawFd;
+use libc::{mmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED};
+
+/// Offsets defined by the Linux AF_XDP kernel API.
+pub const XDP_PGOFF_RX_RING: i64 = 0x00000000;
+pub const XDP_PGOFF_TX_RING: i64 = 0x80000000;
+pub const XDP_PGOFF_FILL_RING: i64 = 0x100000000;
+pub const XDP_PGOFF_COMPLETION_RING: i64 = 0x180000000;
+pub const XDP_UMEM_PGOFF_FILL_RING: i64 = 0x100000000;
+pub const XDP_UMEM_PGOFF_COMPLETION_RING: i64 = 0x180000000;
 
 /// Represents a raw AF_XDP ring (Fill, Completion, RX, or TX).
 pub struct XskRing {
@@ -11,7 +21,33 @@ pub struct XskRing {
 }
 
 impl XskRing {
-    /// Increments the consumer pointer after processing.
+    /// Maps a raw AF_XDP ring from the kernel via mmap.
+    pub unsafe fn map(fd: RawFd, offset: i64, size: usize) -> anyhow::Result<Self> {
+        let ptr = mmap(
+            ptr::null_mut(),
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset,
+        );
+        
+        if ptr == MAP_FAILED {
+            return Err(anyhow::anyhow!("Failed to mmap AF_XDP ring"));
+        }
+        
+        // In a real implementation, we would extract the producer, consumer, 
+        // and descriptor offsets from the kernel-provided xdp_ring_offset struct.
+        
+        Ok(Self {
+            producer: ptr as *mut AtomicU32,
+            consumer: (ptr as usize + 64) as *mut AtomicU32, // Simplified example offset
+            descriptors: (ptr as usize + 128) as *mut u8,   // Simplified example offset
+            mask: (size / 8 - 1) as u32,
+            size: size as u32,
+        })
+    }
+
     #[inline(always)]
     pub fn release(&self, count: u32) {
         unsafe {
@@ -28,9 +64,6 @@ pub struct AfXdpDriver {
 }
 
 impl AfXdpDriver {
-    /// Polls the RX ring for a new packet burst using a zero-allocation API.
-    /// 
-    /// CA-003: Accepts a mutable slice provided by the caller to avoid heap allocation.
     pub fn rx_burst<'a>(&self, out: &mut [AfXdpPacketView<'a>]) -> usize {
         unsafe {
             let prod = (*self.rx_ring.producer).load(Ordering::Acquire);
@@ -41,15 +74,8 @@ impl AfXdpDriver {
             
             for i in 0..count {
                 let idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
-                // In a real implementation, we would read the descriptor from self.rx_ring.descriptors[idx]
-                // and map the UMEM address to the out[i] view.
-                
-                out[i] = AfXdpPacketView {
-                    data: &[], // Placeholder for raw UMEM slice
-                    addr: 0,
-                    len: 0,
-                    timestamp_ns: 0,
-                };
+                // Mapping UMEM address to packet view would occur here
+                out[i] = AfXdpPacketView::default();
             }
             
             count
@@ -57,7 +83,6 @@ impl AfXdpDriver {
     }
 }
 
-/// A zero-copy view of a packet residing in the AF_XDP UMEM.
 #[derive(Default)]
 pub struct AfXdpPacketView<'a> {
     pub data: &'a [u8],
