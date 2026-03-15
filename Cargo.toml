@@ -3,6 +3,7 @@ members = [
     "crates/engine-core",
     "crates/test-utils/pcap-injector",
     "crates/test-utils/pcap-generator",
+    "crates/test-utils/platform-bench",
     "tests/integration-tests",
 ]
 resolver = "2"
