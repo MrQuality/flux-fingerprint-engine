@@ -5,6 +5,7 @@ members = [
     "crates/test-utils/pcap-generator",
     "crates/test-utils/platform-bench",
     "crates/adapters/afxdp",
+    "crates/adapters/dpdk",
     "tests/integration-tests",
 ]
 resolver = "2"
