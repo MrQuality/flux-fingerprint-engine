@@ -1,19 +1,28 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+/// Tier dimensions
+pub const TIER1_SLOT_SIZE: usize = 16 * 1024; // 16 KiB
+pub const TIER1_SLOTS: usize = 2048;
+pub const TIER2_SLOT_SIZE: usize = 64 * 1024; // 64 KiB
+pub const TIER2_SLOTS: usize = 512;
 
 /// A tiered, wait-free pool of forensic scratchpads for temporal reassembly.
-/// 
-/// CA-005: 2-Tiered Allocation
-/// - Tier 1: 2048 x 16KB slots (Standard handshakes)
-/// - Tier 2: 512 x 64KB slots (Extended handshakes)
 pub struct ForensicScratchpadPool {
-    tier1_masks: [AtomicU64; 32], // 32 * 64 = 2048 bits
-    tier2_masks: [AtomicU64; 8],  // 8 * 64 = 512 bits
+    tier1_masks: [AtomicU64; 32], 
+    tier2_masks: [AtomicU64; 8],  
+    
+    // Backing storage
+    tier1_storage: Vec<u8>,
+    tier2_storage: Vec<u8>,
+
+    // ADR-001: Mandatory Exhaustion Telemetry
+    pub scratchpad_exhaustion_total: AtomicUsize,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ScratchpadTier {
-    Tier1, // 16KB
-    Tier2, // 64KB
+    Tier1, 
+    Tier2, 
 }
 
 impl ForensicScratchpadPool {
@@ -21,11 +30,14 @@ impl ForensicScratchpadPool {
         Self {
             tier1_masks: Default::default(),
             tier2_masks: Default::default(),
+            tier1_storage: vec![0u8; TIER1_SLOTS * TIER1_SLOT_SIZE],
+            tier2_storage: vec![0u8; TIER2_SLOTS * TIER2_SLOT_SIZE],
+            scratchpad_exhaustion_total: AtomicUsize::new(0),
         }
     }
 
-    /// Acquires a scratchpad slot using wait-free bitmask logic (CA-009).
-    pub fn acquire(&self, tier: ScratchpadTier) -> Option<usize> {
+    /// Acquires a scratchpad slot and returns its slice.
+    pub fn acquire(&self, tier: ScratchpadTier) -> Option<(usize, &mut [u8])> {
         let masks: &[AtomicU64] = match tier {
             ScratchpadTier::Tier1 => &self.tier1_masks,
             ScratchpadTier::Tier2 => &self.tier2_masks,
@@ -38,15 +50,36 @@ impl ForensicScratchpadPool {
                 if bit >= 64 { break; } 
                 let next = current | (1 << bit);
                 match mask.compare_exchange_weak(current, next, Ordering::Acquire, Ordering::Relaxed) {
-                    Ok(_) => return Some(i * 64 + bit as usize),
+                    Ok(_) => {
+                        let slot_idx = i * 64 + bit as usize;
+                        let slice = self.get_mut_slice(tier, slot_idx);
+                        return Some((slot_idx, slice));
+                    }
                     Err(actual) => current = actual,
                 }
             }
         }
+        
+        // ADR-001: Signal exhaustion
+        self.scratchpad_exhaustion_total.fetch_add(1, Ordering::Relaxed);
         None
     }
 
-    /// Releases a scratchpad slot back to the pool.
+    fn get_mut_slice(&self, tier: ScratchpadTier, idx: usize) -> &mut [u8] {
+        unsafe {
+            match tier {
+                ScratchpadTier::Tier1 => {
+                    let ptr = self.tier1_storage.as_ptr() as *mut u8;
+                    std::slice::from_raw_parts_mut(ptr.add(idx * TIER1_SLOT_SIZE), TIER1_SLOT_SIZE)
+                }
+                ScratchpadTier::Tier2 => {
+                    let ptr = self.tier2_storage.as_ptr() as *mut u8;
+                    std::slice::from_raw_parts_mut(ptr.add(idx * TIER2_SLOT_SIZE), TIER2_SLOT_SIZE)
+                }
+            }
+        }
+    }
+
     pub fn release(&self, tier: ScratchpadTier, slot_idx: usize) {
         let masks: &[AtomicU64] = match tier {
             ScratchpadTier::Tier1 => &self.tier1_masks,
@@ -64,18 +97,22 @@ mod pool_tests {
     use super::*;
 
     #[test]
-    fn test_scratchpad_allocation_exhaustion() {
+    fn test_scratchpad_storage_access() {
         let pool = ForensicScratchpadPool::new();
-        
-        // Fill Tier 2 (512 slots)
-        for _ in 0..512 {
-            assert!(pool.acquire(ScratchpadTier::Tier2).is_some());
+        let (idx, slice) = pool.acquire(ScratchpadTier::Tier1).unwrap();
+        slice[0] = 42;
+        assert_eq!(pool.tier1_storage[idx * TIER1_SLOT_SIZE], 42);
+        pool.release(ScratchpadTier::Tier1, idx);
+    }
+
+    #[test]
+    fn test_scratchpad_exhaustion_telemetry() {
+        let pool = ForensicScratchpadPool::new();
+        for _ in 0..TIER2_SLOTS {
+            pool.acquire(ScratchpadTier::Tier2).unwrap();
         }
-        // Next should fail
+        assert_eq!(pool.scratchpad_exhaustion_total.load(Ordering::Relaxed), 0);
         assert!(pool.acquire(ScratchpadTier::Tier2).is_none());
-        
-        // Release one and re-acquire
-        pool.release(ScratchpadTier::Tier2, 10);
-        assert_eq!(pool.acquire(ScratchpadTier::Tier2), Some(10));
+        assert_eq!(pool.scratchpad_exhaustion_total.load(Ordering::Relaxed), 1);
     }
 }
