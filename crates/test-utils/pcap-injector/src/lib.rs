@@ -31,7 +31,6 @@ impl PcapInjector {
         Ok(Self { raw_data, offsets })
     }
 
-    /// Zero-allocation packet retrieval (CA-03 aligned).
     pub fn get_packet(&self, index: usize) -> Option<BorrowedPacketView<'_>> {
         self.offsets.get(index).map(|&(start, len, ts)| {
             BorrowedPacketView {
@@ -45,6 +44,14 @@ impl PcapInjector {
 
     pub fn packet_count(&self) -> usize {
         self.offsets.len()
+    }
+
+    pub fn raw_data_ptr(&self) -> *const u8 {
+        self.raw_data.as_ptr()
+    }
+
+    pub fn raw_data_len(&self) -> usize {
+        self.raw_data.len()
     }
 }
 

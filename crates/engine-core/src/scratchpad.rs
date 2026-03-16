@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::ops::{Deref, DerefMut};
 
 /// Tier dimensions
 pub const TIER1_SLOT_SIZE: usize = 16 * 1024; // 16 KiB
@@ -6,16 +7,16 @@ pub const TIER1_SLOTS: usize = 2048;
 pub const TIER2_SLOT_SIZE: usize = 64 * 1024; // 64 KiB
 pub const TIER2_SLOTS: usize = 512;
 
-/// A tiered, wait-free pool of forensic scratchpads for temporal reassembly.
+/// A tiered, lock-free pool of forensic scratchpads for temporal reassembly.
 pub struct ForensicScratchpadPool {
     tier1_masks: [AtomicU64; 32], 
     tier2_masks: [AtomicU64; 8],  
     
-    // Backing storage
     tier1_storage: Vec<u8>,
     tier2_storage: Vec<u8>,
 
-    // ADR-001: Mandatory Exhaustion Telemetry
+    /// ADR-001: Mandatory Exhaustion Telemetry
+    /// Incremented only when a request cannot be fulfilled.
     pub scratchpad_exhaustion_total: AtomicUsize,
 }
 
@@ -23,6 +24,35 @@ pub struct ForensicScratchpadPool {
 pub enum ScratchpadTier {
     Tier1, 
     Tier2, 
+}
+
+/// RAII Guard for a scratchpad slot.
+/// 
+/// Enforces safe release on Drop and prevents manual release errors.
+pub struct ScratchpadGuard<'a> {
+    pool: &'a ForensicScratchpadPool,
+    tier: ScratchpadTier,
+    slot_idx: usize,
+    data: *mut [u8],
+}
+
+impl<'a> Deref for ScratchpadGuard<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.data }
+    }
+}
+
+impl<'a> DerefMut for ScratchpadGuard<'a> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { &mut *self.data }
+    }
+}
+
+impl<'a> Drop for ScratchpadGuard<'a> {
+    fn drop(&mut self) {
+        self.pool.release(self.tier, self.slot_idx);
+    }
 }
 
 impl ForensicScratchpadPool {
@@ -36,8 +66,8 @@ impl ForensicScratchpadPool {
         }
     }
 
-    /// Acquires a scratchpad slot and returns its slice.
-    pub fn acquire(&self, tier: ScratchpadTier) -> Option<(usize, &mut [u8])> {
+    /// Acquires a scratchpad slot and returns a Guard.
+    pub fn acquire(&self, tier: ScratchpadTier) -> Option<ScratchpadGuard> {
         let masks: &[AtomicU64] = match tier {
             ScratchpadTier::Tier1 => &self.tier1_masks,
             ScratchpadTier::Tier2 => &self.tier2_masks,
@@ -52,35 +82,36 @@ impl ForensicScratchpadPool {
                 match mask.compare_exchange_weak(current, next, Ordering::Acquire, Ordering::Relaxed) {
                     Ok(_) => {
                         let slot_idx = i * 64 + bit as usize;
-                        let slice = self.get_mut_slice(tier, slot_idx);
-                        return Some((slot_idx, slice));
+                        let data = self.get_mut_ptr(tier, slot_idx);
+                        return Some(ScratchpadGuard {
+                            pool: self,
+                            tier,
+                            slot_idx,
+                            data,
+                        });
                     }
                     Err(actual) => current = actual,
                 }
             }
         }
         
-        // ADR-001: Signal exhaustion
+        // ADR-001: Signal exhaustion only when request fails
         self.scratchpad_exhaustion_total.fetch_add(1, Ordering::Relaxed);
         None
     }
 
-    fn get_mut_slice(&self, tier: ScratchpadTier, idx: usize) -> &mut [u8] {
+    fn get_mut_ptr(&self, tier: ScratchpadTier, idx: usize) -> *mut [u8] {
         unsafe {
-            match tier {
-                ScratchpadTier::Tier1 => {
-                    let ptr = self.tier1_storage.as_ptr() as *mut u8;
-                    std::slice::from_raw_parts_mut(ptr.add(idx * TIER1_SLOT_SIZE), TIER1_SLOT_SIZE)
-                }
-                ScratchpadTier::Tier2 => {
-                    let ptr = self.tier2_storage.as_ptr() as *mut u8;
-                    std::slice::from_raw_parts_mut(ptr.add(idx * TIER2_SLOT_SIZE), TIER2_SLOT_SIZE)
-                }
-            }
+            let (base, size) = match tier {
+                ScratchpadTier::Tier1 => (self.tier1_storage.as_ptr(), TIER1_SLOT_SIZE),
+                ScratchpadTier::Tier2 => (self.tier2_storage.as_ptr(), TIER2_SLOT_SIZE),
+            };
+            let ptr = base.add(idx * size) as *mut u8;
+            std::slice::from_raw_parts_mut(ptr, size)
         }
     }
 
-    pub fn release(&self, tier: ScratchpadTier, slot_idx: usize) {
+    fn release(&self, tier: ScratchpadTier, slot_idx: usize) {
         let masks: &[AtomicU64] = match tier {
             ScratchpadTier::Tier1 => &self.tier1_masks,
             ScratchpadTier::Tier2 => &self.tier2_masks,
@@ -97,20 +128,26 @@ mod pool_tests {
     use super::*;
 
     #[test]
-    fn test_scratchpad_storage_access() {
+    fn test_raii_release() {
         let pool = ForensicScratchpadPool::new();
-        let (idx, slice) = pool.acquire(ScratchpadTier::Tier1).unwrap();
-        slice[0] = 42;
-        assert_eq!(pool.tier1_storage[idx * TIER1_SLOT_SIZE], 42);
-        pool.release(ScratchpadTier::Tier1, idx);
+        {
+            let mut guard = pool.acquire(ScratchpadTier::Tier1).expect("Acquisition failed");
+            guard[0] = 100;
+            assert_eq!(pool.tier1_storage[guard.slot_idx * TIER1_SLOT_SIZE], 100);
+        } // guard drops here
+        
+        // Should be re-acquirable
+        assert!(pool.acquire(ScratchpadTier::Tier1).is_some());
     }
 
     #[test]
-    fn test_scratchpad_exhaustion_telemetry() {
+    fn test_exhaustion_telemetry() {
         let pool = ForensicScratchpadPool::new();
+        let mut _guards = Vec::new();
         for _ in 0..TIER2_SLOTS {
-            pool.acquire(ScratchpadTier::Tier2).unwrap();
+            _guards.push(pool.acquire(ScratchpadTier::Tier2).unwrap());
         }
+        
         assert_eq!(pool.scratchpad_exhaustion_total.load(Ordering::Relaxed), 0);
         assert!(pool.acquire(ScratchpadTier::Tier2).is_none());
         assert_eq!(pool.scratchpad_exhaustion_total.load(Ordering::Relaxed), 1);

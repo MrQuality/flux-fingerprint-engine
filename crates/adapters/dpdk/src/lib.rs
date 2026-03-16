@@ -1,4 +1,3 @@
-#[cfg(target_os = "linux")]
 use flux_engine_core::PacketView;
 #[cfg(target_os = "linux")]
 use std::slice;
@@ -38,7 +37,6 @@ impl PacketView for DpdkMbufView {
     fn rss_queue_id(&self) -> Option<u16> {
         unsafe {
             if self.mbuf_ptr.is_null() { return None; }
-            // Correctly accessing the anonymous union for hash.rss
             let rss_hash = (*self.mbuf_ptr).hash.rss;
             Some((rss_hash % 65536) as u16)
         }
@@ -90,6 +88,7 @@ impl DpdkDriver {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[derive(Default)]
 pub struct DpdkMbufViewMock;
 
 #[cfg(not(target_os = "linux"))]
