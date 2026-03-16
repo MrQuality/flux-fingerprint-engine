@@ -7,8 +7,9 @@ use std::os::unix::io::RawFd;
 #[cfg(target_os = "linux")]
 use libc::{mmap, munmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED, bind, sockaddr_xdp, AF_XDP, close};
 #[cfg(target_os = "linux")]
-use libbpf_sys::{xdp_desc, xdp_mmap_offsets, xdp_ring_offset, xdp_umem_reg, SOL_XDP, XDP_UMEM_REG};
+use libbpf_sys::{xdp_desc, xdp_ring_offset, xdp_umem_reg, SOL_XDP, XDP_UMEM_REG};
 
+/// Represents a raw AF_XDP ring (Fill, Completion, RX, or TX).
 #[cfg(target_os = "linux")]
 pub struct XskRing<T> {
     pub base_ptr: *mut libc::c_void,
@@ -47,6 +48,7 @@ impl<T> XskRing<T> {
         })
     }
 
+    /// Advances the consumer pointer, releasing descriptors back to the kernel.
     #[inline(always)]
     pub fn release(&self, count: u32) {
         unsafe {
@@ -55,17 +57,17 @@ impl<T> XskRing<T> {
         }
     }
 
-    pub unsafe fn produce_fill(&self, addrs: &[u64]) -> usize {
+    /// Pushes items into the ring.
+    pub unsafe fn produce(&self, items: &[T]) -> usize {
         let prod = (*self.producer).load(Ordering::Relaxed);
         let cons = (*self.consumer).load(Ordering::Acquire);
         
         let free = self.size.wrapping_sub(prod.wrapping_sub(cons));
-        let count = std::cmp::min(free as usize, addrs.len());
+        let count = std::cmp::min(free as usize, items.len());
         
         for i in 0..count {
             let idx = (prod.wrapping_add(i as u32)) & self.mask;
-            let desc_ptr = self.descriptors as *mut u64;
-            *desc_ptr.add(idx as usize) = addrs[i];
+            *self.descriptors.add(idx as usize) = std::ptr::read(&items[i]);
         }
         
         (*self.producer).store(prod.wrapping_add(count as u32), Ordering::Release);
@@ -76,9 +78,7 @@ impl<T> XskRing<T> {
 #[cfg(target_os = "linux")]
 impl<T> Drop for XskRing<T> {
     fn drop(&mut self) {
-        unsafe {
-            munmap(self.base_ptr, self.map_size);
-        }
+        unsafe { munmap(self.base_ptr, self.map_size); }
     }
 }
 
@@ -95,43 +95,20 @@ pub struct AfXdpDriver {
 
 #[cfg(target_os = "linux")]
 impl AfXdpDriver {
-    pub unsafe fn register_umem(fd: RawFd, addr: *mut u8, len: u64) -> anyhow::Result<()> {
-        let reg = xdp_umem_reg {
-            addr: addr as u64,
-            len,
-            chunk_size: 4096,
-            headroom: 0,
-            flags: 0,
-        };
-        
-        if libc::setsockopt(fd, SOL_XDP as i32, XDP_UMEM_REG as i32, &reg as *const _ as *const libc::c_void, std::mem::size_of::<xdp_umem_reg>() as u32) != 0 {
-            return Err(anyhow::anyhow!("Failed to register AF_XDP UMEM"));
-        }
-        
-        Ok(())
-    }
-
-    pub unsafe fn bind_socket(fd: RawFd, ifindex: u32, queue_id: u32) -> anyhow::Result<()> {
-        let mut sxdp: sockaddr_xdp = std::mem::zeroed();
-        sxdp.sxdp_family = AF_XDP as u16;
-        sxdp.sxdp_ifindex = ifindex;
-        sxdp.sxdp_queue_id = queue_id;
-        sxdp.sxdp_flags = 0;
-        
-        if bind(fd, &sxdp as *const _ as *const libc::sockaddr, std::mem::size_of::<sockaddr_xdp>() as u32) != 0 {
-            return Err(anyhow::anyhow!("Failed to bind AF_XDP socket"));
-        }
-        
-        Ok(())
-    }
-
-    pub fn rx_burst<'a>(&self, out: &mut [AfXdpPacketView<'a>]) -> usize {
+    /// Hot-path ingestion.
+    /// 
+    /// Enforces MP-004 Mandate: Immediate Descriptor Release.
+    /// Soundness: The 'a lifetime is tied to the driver self, ensuring
+    /// packets cannot outlive the UMEM region.
+    pub fn ingest<'a, F>(&'a self, max_packets: usize, mut f: F) -> usize 
+    where F: FnMut(&AfXdpPacketView<'a>) 
+    {
         unsafe {
             let prod = (*self.rx_ring.producer).load(Ordering::Acquire);
             let cons = (*self.rx_ring.consumer).load(Ordering::Relaxed);
             
             let available = prod.wrapping_sub(cons);
-            let count = std::cmp::min(available as usize, out.len());
+            let count = std::cmp::min(available as usize, max_packets);
             
             for i in 0..count {
                 let idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
@@ -140,17 +117,28 @@ impl AfXdpDriver {
                 let data_ptr = self.umem_base.add(desc.addr as usize);
                 let data = std::slice::from_raw_parts(data_ptr, desc.len as usize);
                 
-                out[i] = AfXdpPacketView {
+                let view = AfXdpPacketView {
                     data,
                     addr: desc.addr,
-                    len: desc.len,
                     timestamp_ns: 0, 
                     queue_id: self.queue_id,
                 };
+                
+                f(&view);
+            }
+            
+            // MP-004: Immediate descriptor release after processing
+            if count > 0 {
+                self.rx_ring.release(count as u32);
             }
             
             count
         }
+    }
+
+    /// Recycles UMEM addresses back to the Fill Ring.
+    pub unsafe fn replenish_fill(&self, addrs: &[u64]) -> usize {
+        self.fill_ring.produce(addrs)
     }
 }
 
@@ -165,11 +153,9 @@ impl Drop for AfXdpDriver {
 }
 
 #[cfg(target_os = "linux")]
-#[derive(Default)]
 pub struct AfXdpPacketView<'a> {
     pub data: &'a [u8],
     pub addr: u64,
-    pub len: u32,
     pub timestamp_ns: u64,
     pub queue_id: u16,
 }
