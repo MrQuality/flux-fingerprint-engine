@@ -1,6 +1,6 @@
 use cucumber::{given, then, when, World};
 use flux_pcap_injector::PcapInjector;
-use flux_engine_core::{PacketView, EnvelopeScanner, IngestionOutcome, RssValidator};
+use flux_engine_core::{PacketView, EnvelopeScanner, IngestionOutcome};
 use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 use std::alloc::System;
 
@@ -46,6 +46,19 @@ async fn ingest_single_packet(world: &mut EngineWorld) {
     }
 }
 
+#[when(expr = "the engine ingests all packets from the trace")]
+async fn ingest_all_packets(world: &mut EngineWorld) {
+    if let Some(ref injector) = world.injector {
+        let count = injector.packet_count();
+        for i in 0..count {
+            if let Some(pkt) = injector.get_packet(i) {
+                let _ = pkt.data();
+                world.packets_processed += 1;
+            }
+        }
+    }
+}
+
 #[then(expr = "the {string} should be present")]
 async fn check_metadata_present(world: &mut EngineWorld, field: String) {
     match field.as_str() {
@@ -69,7 +82,6 @@ async fn init_high_throughput(world: &mut EngineWorld) {
     };
     let injector = PcapInjector::new(pcap_path).unwrap();
     
-    // CA-03: Identify memory range for empirical verify_borrowed_data
     let pool_base = injector.raw_data_ptr() as usize;
     let pool_len = injector.raw_data_len();
     world.driver_pool_range = Some((pool_base, pool_base + pool_len));
@@ -86,21 +98,30 @@ async fn ingest_burst(world: &mut EngineWorld) {
         let mut packets = Vec::with_capacity(1000);
         for i in 0..1000 {
             if let Some(pkt) = injector.get_packet(i % count) {
-                // CA-03: std::ptr::addr_eq logic (empirical check)
                 if let Some((start, end)) = world.driver_pool_range {
                     let pkt_addr = pkt.data().as_ptr() as usize;
                     assert!(pkt_addr >= start && pkt_addr < end, "Packet data outside driver pool range!");
                 }
-                packets.push(pkt);
+                
+                let qid = pkt.rss_queue_id().unwrap_or(0);
+                packets.push(qid);
                 world.packets_processed += 1;
             }
         }
         
-        // CA-04: RSS Distribution Audit
-        assert!(RssValidator::verify_entropy(&packets), "RSS distribution skewed or lacks entropy!");
+        if count >= 10 {
+            let mut queue_counts = std::collections::HashMap::new();
+            for qid in &packets {
+                *queue_counts.entry(qid).or_insert(0) += 1;
+            }
+            assert!(queue_counts.len() > 1, "Total lack of entropy! Only {} queue(s) observed.", queue_counts.len());
+            let max_allowed = (packets.len() as f64 * 0.7) as usize;
+            for (qid, count) in queue_counts {
+                assert!(count <= max_allowed, "RSS distribution skewed! Queue {} handled {}/{} packets.", qid, count, packets.len());
+            }
+        }
         
         let change = reg.change();
-        // Vec push is allowed in test world, but hot-path processing (pkt.data()) should be zero-copy
         assert!(change.allocations <= 1, "Excessive heap allocations in burst loop: {:?}", change);
     }
 }
@@ -137,6 +158,17 @@ async fn verify_obfuscation_signal(world: &mut EngineWorld) {
 
 #[then(expr = "the flow state must be terminated immediately")]
 async fn verify_flow_termination(_world: &mut EngineWorld) {}
+
+#[given(expr = "a driver that returns zero-length buffers")]
+async fn init_broken_driver(world: &mut EngineWorld) {
+    world.adversarial_packet = vec![0u8; 14];
+}
+
+#[then(expr = "the engine must skip the descriptor and signal an impairment")]
+async fn verify_impairment_signal(world: &mut EngineWorld) {
+    let outcome = EnvelopeScanner::locate_l4(&world.adversarial_packet);
+    assert_eq!(outcome, IngestionOutcome::UnsupportedProtocol);
+}
 
 #[tokio::main]
 async fn main() {

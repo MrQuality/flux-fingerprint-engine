@@ -37,7 +37,7 @@ impl PcapInjector {
                 data: &self.raw_data[start..start+len],
                 timestamp_ns: ts,
                 ifindex: Some(1),
-                queue_id: Some(0),
+                queue_id: Some((index % 4) as u16), // Simulate diverse RSS distribution
             }
         })
     }

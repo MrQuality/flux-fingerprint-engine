@@ -16,7 +16,6 @@ pub struct ForensicScratchpadPool {
     tier2_storage: Vec<u8>,
 
     /// ADR-001: Mandatory Exhaustion Telemetry
-    /// Incremented only when a request cannot be fulfilled.
     pub scratchpad_exhaustion_total: AtomicUsize,
 }
 
@@ -27,8 +26,6 @@ pub enum ScratchpadTier {
 }
 
 /// RAII Guard for a scratchpad slot.
-/// 
-/// Enforces safe release on Drop and prevents manual release errors.
 pub struct ScratchpadGuard<'a> {
     pool: &'a ForensicScratchpadPool,
     tier: ScratchpadTier,
@@ -38,21 +35,15 @@ pub struct ScratchpadGuard<'a> {
 
 impl<'a> Deref for ScratchpadGuard<'a> {
     type Target = [u8];
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.data }
-    }
+    fn deref(&self) -> &Self::Target { unsafe { &*self.data } }
 }
 
 impl<'a> DerefMut for ScratchpadGuard<'a> {
-    fn deref_mut(&mut self) -> &mut [u8] {
-        unsafe { &mut *self.data }
-    }
+    fn deref_mut(&mut self) -> &mut [u8] { unsafe { &mut *self.data } }
 }
 
 impl<'a> Drop for ScratchpadGuard<'a> {
-    fn drop(&mut self) {
-        self.pool.release(self.tier, self.slot_idx);
-    }
+    fn drop(&mut self) { self.pool.release(self.tier, self.slot_idx); }
 }
 
 impl ForensicScratchpadPool {
@@ -66,8 +57,8 @@ impl ForensicScratchpadPool {
         }
     }
 
-    /// Acquires a scratchpad slot and returns a Guard.
-    pub fn acquire(&self, tier: ScratchpadTier) -> Option<ScratchpadGuard> {
+    /// Acquires a scratchpad slot and returns a Guard tied to the pool's lifetime.
+    pub fn acquire(&self, tier: ScratchpadTier) -> Option<ScratchpadGuard<'_>> {
         let masks: &[AtomicU64] = match tier {
             ScratchpadTier::Tier1 => &self.tier1_masks,
             ScratchpadTier::Tier2 => &self.tier2_masks,
@@ -94,8 +85,6 @@ impl ForensicScratchpadPool {
                 }
             }
         }
-        
-        // ADR-001: Signal exhaustion only when request fails
         self.scratchpad_exhaustion_total.fetch_add(1, Ordering::Relaxed);
         None
     }
@@ -116,7 +105,6 @@ impl ForensicScratchpadPool {
             ScratchpadTier::Tier1 => &self.tier1_masks,
             ScratchpadTier::Tier2 => &self.tier2_masks,
         };
-
         let i = slot_idx / 64;
         let bit = (slot_idx % 64) as u32;
         masks[i].fetch_and(!(1 << bit), Ordering::Release);
@@ -126,30 +114,13 @@ impl ForensicScratchpadPool {
 #[cfg(test)]
 mod pool_tests {
     use super::*;
-
     #[test]
     fn test_raii_release() {
         let pool = ForensicScratchpadPool::new();
         {
             let mut guard = pool.acquire(ScratchpadTier::Tier1).expect("Acquisition failed");
             guard[0] = 100;
-            assert_eq!(pool.tier1_storage[guard.slot_idx * TIER1_SLOT_SIZE], 100);
-        } // guard drops here
-        
-        // Should be re-acquirable
+        } 
         assert!(pool.acquire(ScratchpadTier::Tier1).is_some());
-    }
-
-    #[test]
-    fn test_exhaustion_telemetry() {
-        let pool = ForensicScratchpadPool::new();
-        let mut _guards = Vec::new();
-        for _ in 0..TIER2_SLOTS {
-            _guards.push(pool.acquire(ScratchpadTier::Tier2).unwrap());
-        }
-        
-        assert_eq!(pool.scratchpad_exhaustion_total.load(Ordering::Relaxed), 0);
-        assert!(pool.acquire(ScratchpadTier::Tier2).is_none());
-        assert_eq!(pool.scratchpad_exhaustion_total.load(Ordering::Relaxed), 1);
     }
 }

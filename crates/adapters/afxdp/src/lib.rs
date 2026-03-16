@@ -48,7 +48,6 @@ impl<T> XskRing<T> {
         })
     }
 
-    /// Advances the consumer pointer, releasing descriptors back to the kernel.
     #[inline(always)]
     pub fn release(&self, count: u32) {
         unsafe {
@@ -57,7 +56,6 @@ impl<T> XskRing<T> {
         }
     }
 
-    /// Pushes items into the ring.
     pub unsafe fn produce(&self, items: &[T]) -> usize {
         let prod = (*self.producer).load(Ordering::Relaxed);
         let cons = (*self.consumer).load(Ordering::Acquire);
@@ -95,13 +93,13 @@ pub struct AfXdpDriver {
 
 #[cfg(target_os = "linux")]
 impl AfXdpDriver {
-    /// Hot-path ingestion.
+    /// Hot-path ingestion with scope-limited borrowing and automated recycle.
     /// 
-    /// Enforces MP-004 Mandate: Immediate Descriptor Release.
-    /// Soundness: The 'a lifetime is tied to the driver self, ensuring
-    /// packets cannot outlive the UMEM region.
-    pub fn ingest<'a, F>(&'a self, max_packets: usize, mut f: F) -> usize 
-    where F: FnMut(&AfXdpPacketView<'a>) 
+    /// ADR-001 / MP-004 Enforcement: 
+    /// 1. Descriptors are released immediately after closure execution.
+    /// 2. UMEM addresses are recycled back to the Fill Ring in the same contract.
+    pub fn ingest<F>(&self, max_packets: usize, mut f: F) -> usize 
+    where F: FnMut(&AfXdpPacketView<'_>) 
     {
         unsafe {
             let prod = (*self.rx_ring.producer).load(Ordering::Acquire);
@@ -110,6 +108,8 @@ impl AfXdpDriver {
             let available = prod.wrapping_sub(cons);
             let count = std::cmp::min(available as usize, max_packets);
             
+            let mut recycled_addrs = Vec::with_capacity(count);
+
             for i in 0..count {
                 let idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
                 let desc = &*self.rx_ring.descriptors.add(idx as usize);
@@ -119,26 +119,22 @@ impl AfXdpDriver {
                 
                 let view = AfXdpPacketView {
                     data,
-                    addr: desc.addr,
                     timestamp_ns: 0, 
                     queue_id: self.queue_id,
                 };
                 
                 f(&view);
+                recycled_addrs.push(desc.addr);
             }
             
-            // MP-004: Immediate descriptor release after processing
+            // Critical: Release RX and replenish Fill in one transaction
             if count > 0 {
                 self.rx_ring.release(count as u32);
+                self.fill_ring.produce(&recycled_addrs);
             }
             
             count
         }
-    }
-
-    /// Recycles UMEM addresses back to the Fill Ring.
-    pub unsafe fn replenish_fill(&self, addrs: &[u64]) -> usize {
-        self.fill_ring.produce(addrs)
     }
 }
 
@@ -155,7 +151,6 @@ impl Drop for AfXdpDriver {
 #[cfg(target_os = "linux")]
 pub struct AfXdpPacketView<'a> {
     pub data: &'a [u8],
-    pub addr: u64,
     pub timestamp_ns: u64,
     pub queue_id: u16,
 }
