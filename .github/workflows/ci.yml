@@ -27,7 +27,9 @@ jobs:
           libmnl-dev \
           cmake \
           build-essential \
-          libclang-dev
+          libclang-dev \
+          musl-tools \
+          gcc-multilib
         
     - name: Build
       run: cargo build --workspace --verbose
