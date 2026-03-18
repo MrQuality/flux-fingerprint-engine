@@ -18,7 +18,16 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libbpf-dev libxdp-dev
+        sudo apt-get install -y \
+          libbpf-dev \
+          libxdp-dev \
+          libnuma-dev \
+          pkg-config \
+          libibverbs-dev \
+          libmnl-dev \
+          cmake \
+          build-essential \
+          libclang-dev
         
     - name: Build
       run: cargo build --workspace --verbose
@@ -27,4 +36,4 @@ jobs:
       run: cargo test --workspace --verbose
       
     - name: Run Integration Tests (Cucumber)
-      run: cd flux-fingerprint-engine && cargo run -p flux-integration-tests --verbose
+      run: cargo run -p flux-integration-tests --verbose
