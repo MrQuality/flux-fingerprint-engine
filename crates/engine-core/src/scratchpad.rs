@@ -33,6 +33,15 @@ pub struct ScratchpadGuard<'a> {
     data: *mut [u8],
 }
 
+impl<'a> std::fmt::Debug for ScratchpadGuard<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScratchpadGuard")
+            .field("tier", &self.tier)
+            .field("slot_idx", &self.slot_idx)
+            .finish()
+    }
+}
+
 impl<'a> Deref for ScratchpadGuard<'a> {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {

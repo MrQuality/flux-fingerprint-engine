@@ -63,6 +63,7 @@ pub struct EnvelopeScanner;
 
 impl EnvelopeScanner {
     const MAX_IPV6_EXT_HEADERS: u8 = 8;
+    const MAX_IPV6_EXT_BYTES: usize = 128; // MP-001 bound
 
     /// Traverses the L3 headers to locate the L4 (TCP) offset.
     ///
@@ -100,6 +101,7 @@ impl EnvelopeScanner {
                 let mut offset = 14 + 40;
                 let mut next_header = packet[14 + 6];
                 let mut ext_count = 0;
+                let mut ext_bytes = 0;
 
                 while Self::is_ipv6_extension(next_header) {
                     if ext_count >= Self::MAX_IPV6_EXT_HEADERS {
@@ -112,6 +114,11 @@ impl EnvelopeScanner {
                     let ext_len = (packet[offset + 1] as usize + 1) * 8;
                     if packet.len() < offset + ext_len {
                         return IngestionOutcome::MalformedProtocolHeader;
+                    }
+
+                    ext_bytes += ext_len;
+                    if ext_bytes > Self::MAX_IPV6_EXT_BYTES {
+                        return IngestionOutcome::ObfuscatedNetworkEnvelope;
                     }
 
                     next_header = packet[offset];
