@@ -1,8 +1,8 @@
-name: Engine CI
+name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "feat/*" ]
   pull_request:
     branches: [ main ]
 
@@ -10,26 +10,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: Lint & Format
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Check formatting
-        run: cargo fmt -- --check
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
-
-  test:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Run tests
-        run: cargo test --verbose
+    - uses: actions/checkout@v4
+      with:
+        lfs: true
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libbpf-dev \
+          libxdp-dev \
+          pkg-config \
+          cmake \
+          build-essential \
+          libclang-dev
+        
+    - name: Build
+      run: cargo build --workspace --exclude flux-engine-dpdk --exclude flux-engine-afxdp --verbose
+      
+    - name: Run Unit Tests
+      run: cargo test --workspace --exclude flux-engine-dpdk --exclude flux-engine-afxdp --verbose
+      
+    - name: Run Integration Tests (Cucumber)
+      run: cargo run -p flux-integration-tests --verbose

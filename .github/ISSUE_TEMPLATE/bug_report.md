@@ -9,10 +9,10 @@ assignees: ''
 
 ## Forensic Details
 **Problem Statement:**
-<!-- Clear and concise description of what the bug is. -->
+<!-- Clear and concise description of the failure observed. -->
 
 **Violation Reference:**
-<!-- Link to the specific PRD section or Project Directive (LC_XXX) being violated. -->
+<!-- Reference specific RFCs (e.g., TLS 1.3) or public documentation being violated. -->
 
 **Mechanism of Failure:**
 <!-- Technical explanation of how the failure occurs at the packet or logic level. -->
@@ -25,14 +25,11 @@ assignees: ''
 <!-- List paths to files where the defect is observed. -->
 
 ## Impact Analysis
-**Temporal Cost:**
-<!-- Estimated engineering time lost or required for fix. -->
+**Severity:**
+<!-- Low, Medium, High, Critical -->
 
 **Cascading Risks:**
-<!-- Does this bug affect other layers or invariants? -->
-
-**Debt Interest Rate:**
-<!-- Low, Medium, High, or Compound. -->
+<!-- Does this bug affect other layers or performance invariants? -->
 
 ## Evidence
 **Lines of Code:**

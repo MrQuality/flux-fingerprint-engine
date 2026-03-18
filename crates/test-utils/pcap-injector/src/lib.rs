@@ -31,14 +31,27 @@ impl PcapInjector {
         Ok(Self { raw_data, offsets })
     }
 
-    pub fn packets(&self) -> Vec<BorrowedPacketView<'_>> {
-        self.offsets
-            .iter()
-            .map(|&(start, len, ts)| BorrowedPacketView {
+    pub fn get_packet(&self, index: usize) -> Option<BorrowedPacketView<'_>> {
+        self.offsets.get(index).map(|&(start, len, ts)| {
+            BorrowedPacketView {
                 data: &self.raw_data[start..start + len],
                 timestamp_ns: ts,
-            })
-            .collect()
+                ifindex: Some(1),
+                queue_id: Some((index % 4) as u16), // Simulate diverse RSS distribution
+            }
+        })
+    }
+
+    pub fn packet_count(&self) -> usize {
+        self.offsets.len()
+    }
+
+    pub fn raw_data_ptr(&self) -> *const u8 {
+        self.raw_data.as_ptr()
+    }
+
+    pub fn raw_data_len(&self) -> usize {
+        self.raw_data.len()
     }
 }
 
@@ -46,6 +59,8 @@ impl PcapInjector {
 pub struct BorrowedPacketView<'a> {
     data: &'a [u8],
     timestamp_ns: u64,
+    ifindex: Option<u32>,
+    queue_id: Option<u16>,
 }
 
 impl<'a> PacketView for BorrowedPacketView<'a> {
@@ -55,10 +70,10 @@ impl<'a> PacketView for BorrowedPacketView<'a> {
     fn data(&self) -> &[u8] {
         self.data
     }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_zero_copy_mapping() {}
+    fn ingress_ifindex(&self) -> Option<u32> {
+        self.ifindex
+    }
+    fn rss_queue_id(&self) -> Option<u16> {
+        self.queue_id
+    }
 }
