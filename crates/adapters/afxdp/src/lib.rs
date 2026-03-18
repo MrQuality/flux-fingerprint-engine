@@ -1,10 +1,9 @@
 #[cfg(target_os = "linux")]
 use flux_engine_core::PacketView;
 #[cfg(target_os = "linux")]
-use libbpf_sys::{xdp_desc, xdp_ring_offset, xdp_umem_reg, SOL_XDP, XDP_UMEM_REG};
-#[cfg(target_os = "linux")]
 use libc::{
-    bind, close, mmap, munmap, sockaddr_xdp, AF_XDP, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE,
+    bind, close, mmap, munmap, sockaddr_xdp, xdp_desc, xdp_ring_offset, xdp_umem_reg, AF_XDP,
+    MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, SOL_XDP, XDP_UMEM_REG,
 };
 #[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;

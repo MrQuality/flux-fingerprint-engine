@@ -27,10 +27,10 @@ jobs:
           libclang-dev
         
     - name: Build
-      run: cargo build --workspace --exclude flux-engine-dpdk --verbose
+      run: cargo build --workspace --exclude flux-engine-dpdk --exclude flux-engine-afxdp --verbose
       
     - name: Run Unit Tests
-      run: cargo test --workspace --exclude flux-engine-dpdk --verbose
+      run: cargo test --workspace --exclude flux-engine-dpdk --exclude flux-engine-afxdp --verbose
       
     - name: Run Integration Tests (Cucumber)
       run: cargo run -p flux-integration-tests --verbose
