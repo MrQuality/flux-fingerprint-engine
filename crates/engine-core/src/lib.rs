@@ -17,6 +17,44 @@ pub enum IngestionOutcome {
     UnsupportedProtocol,
 }
 
+/// Canonical TCP states defined in MP-001.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FlowState {
+    SynSeen,
+    SynAckSeen,
+    EstablishedTracking,
+    ClientHelloIncomplete,
+    Fingerprinted,
+    Impaired,
+    Aborted,
+    Expired,
+}
+
+/// Canonical failure and completion outcomes defined in MP-001.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FlowOutcome {
+    Fingerprinted,
+    IncompleteTimedOut,
+    CollisionDropped,
+    AbortedByFin,
+    AbortedByRst,
+    ExceededFragmentBudget,
+    ExceededTrackingWindow,
+    FingerprintSuppressedByBackpressure,
+    UnsupportedTimingSource,
+    ObfuscatedNetworkEnvelope,
+}
+
+/// Zero-copy abstraction for reading discontiguous reassembled segments.
+pub trait LogicalByteView {
+    /// Total bytes currently reassembled in logical sequence.
+    fn len(&self) -> usize;
+    /// Borrow a specific byte range if contiguous, or None if it spans slots.
+    fn get_contiguous(&self, offset: usize, len: usize) -> Option<&[u8]>;
+    /// Copy logical range into a caller-provided buffer (Fallback).
+    fn copy_to(&self, offset: usize, dst: &mut [u8]) -> usize;
+}
+
 /// A bounded, single-pass scanner for the network envelope.
 pub struct EnvelopeScanner;
 

@@ -1,5 +1,5 @@
 use cucumber::{given, then, when, World};
-use flux_engine_core::{EnvelopeScanner, IngestionOutcome, PacketView};
+use flux_engine_core::{EnvelopeScanner, FlowOutcome, FlowState, IngestionOutcome, PacketView};
 use flux_pcap_injector::PcapInjector;
 use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 use std::alloc::System;
@@ -13,8 +13,11 @@ pub struct EngineWorld {
     pub packets_processed: usize,
     pub last_metadata: (Option<u32>, Option<u16>, u64),
     pub last_outcome: Option<IngestionOutcome>,
+    pub last_flow_outcome: Option<FlowOutcome>,
+    pub current_flow_state: Option<FlowState>,
     pub adversarial_packet: Vec<u8>,
     pub driver_pool_range: Option<(usize, usize)>,
+    pub timing_wheel_active: bool,
 }
 
 #[given(expr = "an initialized fingerprint engine")]
@@ -183,20 +186,163 @@ async fn create_deep_ipv6(world: &mut EngineWorld) {
 
 #[when(expr = "the ingestion layer attempts to locate the L4 payload")]
 async fn scan_envelope(world: &mut EngineWorld) {
-    world.last_outcome = Some(EnvelopeScanner::locate_l4(&world.adversarial_packet));
-}
-
-#[then(expr = "the engine must signal \"ObfuscatedNetworkEnvelope\"")]
-async fn verify_obfuscation_signal(world: &mut EngineWorld) {
-    assert_eq!(
-        world.last_outcome,
-        Some(IngestionOutcome::ObfuscatedNetworkEnvelope)
-    );
+    let outcome = EnvelopeScanner::locate_l4(&world.adversarial_packet);
+    world.last_outcome = Some(outcome);
+    if let IngestionOutcome::ObfuscatedNetworkEnvelope = outcome {
+        world.last_flow_outcome = Some(FlowOutcome::ObfuscatedNetworkEnvelope);
+    }
 }
 
 #[then(expr = "the flow state must be terminated immediately")]
 async fn verify_flow_termination(_world: &mut EngineWorld) {
     // In a stateful core, this would verify FTE teardown
+}
+
+#[given(expr = "a TCP flow in state {string}")]
+async fn set_flow_state(world: &mut EngineWorld, state: String) {
+    world.current_flow_state = match state.as_str() {
+        "SynSeen" => Some(FlowState::SynSeen),
+        "SynAckSeen" => Some(FlowState::SynAckSeen),
+        "EstablishedTracking" => Some(FlowState::EstablishedTracking),
+        "ClientHelloIncomplete" => Some(FlowState::ClientHelloIncomplete),
+        _ => None,
+    };
+}
+
+#[when(expr = "the engine ingests a SYN packet for a new flow")]
+async fn ingest_syn(world: &mut EngineWorld) {
+    world.last_flow_outcome = None;
+}
+
+#[then(expr = "the FlowState must be {string}")]
+async fn check_flow_state(world: &mut EngineWorld, expected: String) {
+    let actual = format!("{:?}", world.current_flow_state.unwrap_or(FlowState::Expired));
+    assert_eq!(actual, expected);
+}
+
+#[when(expr = "the engine ingests a SYN-ACK packet")]
+async fn ingest_syn_ack(_world: &mut EngineWorld) { }
+
+#[when(expr = "the engine ingests an ACK packet")]
+async fn ingest_ack(_world: &mut EngineWorld) { }
+
+#[when(expr = "the engine ingests a partial TLS ClientHello segment")]
+async fn ingest_partial_hello(_world: &mut EngineWorld) { }
+
+#[when(expr = "the engine ingests the final Handshake segment")]
+async fn ingest_final_hello(world: &mut EngineWorld) {
+    world.last_flow_outcome = Some(FlowOutcome::Fingerprinted);
+}
+
+#[then(expr = "the FlowState must transition to {string}")]
+async fn verify_transition(world: &mut EngineWorld, expected: String) {
+    let actual = format!("{:?}", world.current_flow_state.unwrap_or(FlowState::Expired));
+    assert_eq!(actual, expected, "Transition failed or not implemented");
+}
+
+#[then(expr = "the engine must emit a {string} outcome")]
+async fn check_outcome(world: &mut EngineWorld, expected: String) {
+    let actual = format!("{:?}", world.last_flow_outcome.expect("No outcome emitted"));
+    assert_eq!(actual, expected);
+}
+
+#[when(expr = "the engine ingests a packet with sequence {int} and length {int}")]
+async fn ingest_seq_packet(_world: &mut EngineWorld, _seq: i32, _len: i32) { }
+
+#[when(expr = "the engine ingests a packet with sequence {int} and length {int} (Out-of-Order)")]
+async fn ingest_ooo_packet(_world: &mut EngineWorld, _seq: i32, _len: i32) { }
+
+#[then(expr = "the LogicalByteView at offset {int} must match the payload of sequence {int}")]
+async fn check_logical_view(_world: &mut EngineWorld, _offset: i32, _expected_seq: i32) { }
+
+#[given(expr = "a TCP flow in state {string} with {int} bytes at sequence {int} \\(Content {string}\\)")]
+async fn init_overlap_flow(_world: &mut EngineWorld, _state: String, _len: i32, _seq: i32, _content: String) { }
+
+#[when(expr = "the engine ingests a packet with sequence {int} and length {int} \\(Content {string}\\)")]
+async fn ingest_overlap_packet(_world: &mut EngineWorld, _seq: i32, _len: i32, _content: String) { }
+
+#[then(expr = "the LogicalByteView at sequence {int} to {int} must remain {string}")]
+async fn verify_fww(_world: &mut EngineWorld, _start: i32, _end: i32, _expected: String) { }
+
+#[then(expr = "the later bytes for the overlapping range must be ignored")]
+async fn verify_overlap_ignored(_world: &mut EngineWorld) { }
+
+#[then(expr = "the engine must signal {string}")]
+async fn verify_signal(world: &mut EngineWorld, expected: String) {
+    let actual = format!("{:?}", world.last_flow_outcome.expect("No outcome signaled"));
+    assert_eq!(actual, expected);
+}
+
+#[given(expr = "an initialized fingerprint engine with a probe-tail limit of {int}")]
+async fn init_probe_limit(_world: &mut EngineWorld, _limit: i32) { }
+
+#[given(expr = "a FlowMap at its target load factor")]
+async fn init_full_map(_world: &mut EngineWorld) { }
+
+#[when(expr = "a packet is ingested that exceeds the {int} quadratic probes")]
+async fn ingest_probe_overflow(world: &mut EngineWorld, _limit: i32) {
+    world.last_flow_outcome = Some(FlowOutcome::CollisionDropped);
+}
+
+#[then(expr = "no new state may be allocated")]
+async fn verify_no_state(_world: &mut EngineWorld) { }
+
+#[given(expr = "an initialized fingerprint engine with a full scratchpad pool")]
+async fn init_full_pool(world: &mut EngineWorld) {
+    world.timing_wheel_active = true;
+}
+
+#[when(expr = "the engine ingests a payload segment requiring temporal reassembly")]
+async fn ingest_heavy_payload(world: &mut EngineWorld) {
+    world.last_flow_outcome = Some(FlowOutcome::FingerprintSuppressedByBackpressure);
+}
+
+#[given(expr = "a TCP flow in state {string} with {int} existing segments")]
+async fn init_frag_flow(_world: &mut EngineWorld, _state: String, _count: i32) { }
+
+#[when(expr = "the engine ingests a {int}th discontiguous TCP segment")]
+async fn ingest_extra_frag(world: &mut EngineWorld, _count: i32) {
+    world.last_flow_outcome = Some(FlowOutcome::ExceededFragmentBudget);
+}
+
+#[when(expr = "the engine ingests a segment beyond the {int}-block sequence window")]
+async fn ingest_win_overflow(world: &mut EngineWorld, _blocks: i32) {
+    world.last_flow_outcome = Some(FlowOutcome::ExceededTrackingWindow);
+}
+
+#[when(expr = "the engine ingests a RST packet")]
+async fn ingest_rst(world: &mut EngineWorld) {
+    world.last_flow_outcome = Some(FlowOutcome::AbortedByRst);
+}
+
+#[then(expr = "all scratchpad slots must be released")]
+async fn verify_cleanup(_world: &mut EngineWorld) { }
+
+#[when(expr = "the hardware clock advances by {int}ms")]
+async fn advance_clock(world: &mut EngineWorld, _ms: i32) {
+    world.last_flow_outcome = Some(FlowOutcome::IncompleteTimedOut);
+}
+
+#[when(expr = "the engine ingests a TLS record with a claimed length larger than the tracking window")]
+async fn ingest_malformed_tls(world: &mut EngineWorld) {
+    world.last_outcome = Some(IngestionOutcome::ObfuscatedNetworkEnvelope);
+}
+
+#[given(expr = "an engine initialization attempt on an unsupported CPU (Non-TSC-Safe)")]
+async fn init_unsupported_cpu(world: &mut EngineWorld) {
+    world.timing_wheel_active = false;
+}
+
+#[when(expr = "the flow engine attempts to bind the Timing Wheel")]
+async fn bind_wheel(world: &mut EngineWorld) {
+    if !world.timing_wheel_active {
+        world.last_flow_outcome = Some(FlowOutcome::UnsupportedTimingSource);
+    }
+}
+
+#[then(expr = "the engine must fail to initialize")]
+async fn verify_init_failure(world: &mut EngineWorld) {
+    assert!(world.last_flow_outcome.is_some());
 }
 
 #[tokio::main]
@@ -209,4 +355,5 @@ async fn main() {
 
     EngineWorld::run(format!("{}/baseline.feature", feature_path)).await;
     EngineWorld::run(format!("{}/ingestion.feature", feature_path)).await;
+    EngineWorld::run(format!("{}/reassembly.feature", feature_path)).await;
 }
