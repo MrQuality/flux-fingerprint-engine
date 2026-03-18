@@ -1,6 +1,6 @@
 use cucumber::{given, then, when, World};
 use flux_pcap_injector::PcapInjector;
-use flux_engine_core::{PacketView, EnvelopeScanner, IngestionOutcome, RssValidator};
+use flux_engine_core::{PacketView, EnvelopeScanner, IngestionOutcome};
 use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
 use std::alloc::System;
 
@@ -28,7 +28,7 @@ async fn check_rust_version(_world: &mut EngineWorld) {
 }
 
 #[given(expr = "a simulated {string} ingestion driver")]
-async fn init_simulated_driver(world: &mut EngineWorld, driver_type: String) {
+async fn init_simulated_driver(_world: &mut EngineWorld, _driver_type: String) {
     // In a real recovery, this would instantiate the actual adapter types
     // and bind them to a mock hardware environment.
 }
@@ -183,6 +183,6 @@ async fn main() {
         "../features"
     };
 
-    EngineWorld::run(&format!("{}/baseline.feature", feature_path)).await;
-    EngineWorld::run(&format!("{}/ingestion.feature", feature_path)).await;
+    EngineWorld::run(format!("{}/baseline.feature", feature_path)).await;
+    EngineWorld::run(format!("{}/ingestion.feature", feature_path)).await;
 }

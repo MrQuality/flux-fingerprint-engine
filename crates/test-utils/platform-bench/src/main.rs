@@ -17,7 +17,7 @@ impl ImixGenerator {
     fn new() -> Self {
         Self {
             sizes: [64, 570, 1514],
-            weights: WeightedIndex::new(&[7, 4, 1]).unwrap(),
+            weights: WeightedIndex::new([7, 4, 1]).unwrap(),
         }
     }
 

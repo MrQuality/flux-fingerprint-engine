@@ -46,6 +46,12 @@ impl<'a> Drop for ScratchpadGuard<'a> {
     fn drop(&mut self) { self.pool.release(self.tier, self.slot_idx); }
 }
 
+impl Default for ForensicScratchpadPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ForensicScratchpadPool {
     pub fn new() -> Self {
         Self {
@@ -96,7 +102,7 @@ impl ForensicScratchpadPool {
                 ScratchpadTier::Tier2 => (self.tier2_storage.as_ptr(), TIER2_SLOT_SIZE),
             };
             let ptr = base.add(idx * size) as *mut u8;
-            std::slice::from_raw_parts_mut(ptr, size)
+            std::ptr::slice_from_raw_parts_mut(ptr, size)
         }
     }
 

@@ -67,10 +67,7 @@ impl EnvelopeScanner {
     }
 
     fn is_ipv6_extension(header_type: u8) -> bool {
-        match header_type {
-            0 | 43 | 44 | 51 | 60 | 135 | 139 | 140 => true,
-            _ => false,
-        }
+        matches!(header_type, 0 | 43 | 44 | 51 | 60 | 135 | 139 | 140)
     }
 }
 
@@ -109,14 +106,15 @@ impl RssValidator {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     struct MockPacket<'a> {
-        data: &'a [u8],
-        ts: u64,
+        _data: &'a [u8],
+        _ts: u64,
     }
 
     impl<'a> PacketView for MockPacket<'a> {
-        fn timestamp_ns(&self) -> u64 { self.ts }
-        fn data(&self) -> &[u8] { self.data }
+        fn timestamp_ns(&self) -> u64 { self._ts }
+        fn data(&self) -> &[u8] { self._data }
         fn ingress_ifindex(&self) -> Option<u32> { None }
         fn rss_queue_id(&self) -> Option<u16> { None }
     }
