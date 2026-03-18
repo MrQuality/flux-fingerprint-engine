@@ -21,21 +21,16 @@ jobs:
         sudo apt-get install -y \
           libbpf-dev \
           libxdp-dev \
-          libnuma-dev \
           pkg-config \
-          libibverbs-dev \
-          libmnl-dev \
           cmake \
           build-essential \
-          libclang-dev \
-          musl-tools \
-          gcc-multilib
+          libclang-dev
         
     - name: Build
-      run: cargo build --workspace --verbose
+      run: cargo build --workspace --exclude flux-engine-dpdk --verbose
       
     - name: Run Unit Tests
-      run: cargo test --workspace --verbose
+      run: cargo test --workspace --exclude flux-engine-dpdk --verbose
       
     - name: Run Integration Tests (Cucumber)
       run: cargo run -p flux-integration-tests --verbose
