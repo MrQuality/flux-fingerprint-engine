@@ -3,9 +3,9 @@ use rand::distributions::{Distribution, WeightedIndex};
 use rand::thread_rng;
 
 #[cfg(target_os = "linux")]
-use perf_event::{Builder, Group};
-#[cfg(target_os = "linux")]
 use perf_event::events::Hardware;
+#[cfg(target_os = "linux")]
+use perf_event::{Builder, Group};
 
 /// IMIX Distribution (7:4:1 ratio for 64B, 570B, 1514B packets)
 struct ImixGenerator {
@@ -30,15 +30,24 @@ impl ImixGenerator {
 fn main() -> Result<()> {
     println!("FluxFingerprint Platform Verification Benchmark (CA-01)");
     let gen = ImixGenerator::new();
-    
+
     let iterations = 1_000_000;
 
     #[cfg(target_os = "linux")]
     {
         let mut group = Group::new()?;
-        let cycles = Builder::new().group(&mut group).kind(Hardware::CPU_CYCLES).build()?;
-        let instructions = Builder::new().group(&mut group).kind(Hardware::INSTRUCTIONS).build()?;
-        let cache_misses = Builder::new().group(&mut group).kind(Hardware::CACHE_MISSES).build()?;
+        let cycles = Builder::new()
+            .group(&mut group)
+            .kind(Hardware::CPU_CYCLES)
+            .build()?;
+        let instructions = Builder::new()
+            .group(&mut group)
+            .kind(Hardware::INSTRUCTIONS)
+            .build()?;
+        let cache_misses = Builder::new()
+            .group(&mut group)
+            .kind(Hardware::CACHE_MISSES)
+            .build()?;
 
         println!("Starting benchmark ({} iterations)...", iterations);
         group.enable()?;
@@ -51,7 +60,7 @@ fn main() -> Result<()> {
 
         group.disable()?;
         let counts = group.read()?;
-        
+
         let inst = counts[&instructions];
         let cyc = counts[&cycles];
         let miss = counts[&cache_misses];
@@ -73,6 +82,6 @@ fn main() -> Result<()> {
         }
         println!("Simulation complete. Performance counters require Linux.");
     }
-    
+
     Ok(())
 }

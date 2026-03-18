@@ -1,13 +1,15 @@
 #[cfg(target_os = "linux")]
 use flux_engine_core::PacketView;
 #[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use libbpf_sys::{xdp_desc, xdp_ring_offset, xdp_umem_reg, SOL_XDP, XDP_UMEM_REG};
+#[cfg(target_os = "linux")]
+use libc::{
+    bind, close, mmap, munmap, sockaddr_xdp, AF_XDP, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE,
+};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
 #[cfg(target_os = "linux")]
-use libc::{mmap, munmap, PROT_READ, PROT_WRITE, MAP_SHARED, MAP_FAILED, bind, sockaddr_xdp, AF_XDP, close};
-#[cfg(target_os = "linux")]
-use libbpf_sys::{xdp_desc, xdp_ring_offset, xdp_umem_reg, SOL_XDP, XDP_UMEM_REG};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Represents a raw AF_XDP ring (Fill, Completion, RX, or TX).
 #[cfg(target_os = "linux")]
@@ -24,9 +26,15 @@ pub struct XskRing<T> {
 #[cfg(target_os = "linux")]
 impl<T> XskRing<T> {
     /// Maps a raw AF_XDP ring from the kernel using explicit layout offsets.
-    /// 
+    ///
     /// Corrective Action 5: Uses authoritative libbpf-sys ring_offsets.
-    pub unsafe fn map(fd: RawFd, mmap_offset: i64, map_size: usize, num_entries: u32, ring_offsets: &xdp_ring_offset) -> anyhow::Result<Self> {
+    pub unsafe fn map(
+        fd: RawFd,
+        mmap_offset: i64,
+        map_size: usize,
+        num_entries: u32,
+        ring_offsets: &xdp_ring_offset,
+    ) -> anyhow::Result<Self> {
         let ptr = mmap(
             std::ptr::null_mut(),
             map_size,
@@ -35,11 +43,11 @@ impl<T> XskRing<T> {
             fd,
             mmap_offset,
         );
-        
+
         if ptr == MAP_FAILED {
             return Err(anyhow::anyhow!("Failed to mmap AF_XDP ring"));
         }
-        
+
         Ok(Self {
             base_ptr: ptr,
             map_size,
@@ -64,15 +72,15 @@ impl<T> XskRing<T> {
     pub unsafe fn produce(&self, items: &[T]) -> usize {
         let prod = (*self.producer).load(Ordering::Relaxed);
         let cons = (*self.consumer).load(Ordering::Acquire);
-        
+
         let free = self.num_entries.wrapping_sub(prod.wrapping_sub(cons));
         let count = std::cmp::min(free as usize, items.len());
-        
+
         for i in 0..count {
             let idx = (prod.wrapping_add(i as u32)) & self.mask;
             *self.descriptors.add(idx as usize) = std::ptr::read(&items[i]);
         }
-        
+
         (*self.producer).store(prod.wrapping_add(count as u32), Ordering::Release);
         count
     }
@@ -81,7 +89,9 @@ impl<T> XskRing<T> {
 #[cfg(target_os = "linux")]
 impl<T> Drop for XskRing<T> {
     fn drop(&mut self) {
-        unsafe { munmap(self.base_ptr, self.map_size); }
+        unsafe {
+            munmap(self.base_ptr, self.map_size);
+        }
     }
 }
 
@@ -99,19 +109,20 @@ pub struct AfXdpDriver {
 #[cfg(target_os = "linux")]
 impl AfXdpDriver {
     /// Hot-path ingestion with scope-limited borrowing and automated recycle.
-    /// 
+    ///
     /// Corrective Action 4: Zero per-call allocations.
-    pub fn ingest<F>(&self, max_packets: usize, mut f: F) -> usize 
-    where F: FnMut(&AfXdpPacketView<'_>) 
+    pub fn ingest<F>(&self, max_packets: usize, mut f: F) -> usize
+    where
+        F: FnMut(&AfXdpPacketView<'_>),
     {
         unsafe {
             let prod = (*self.rx_ring.producer).load(Ordering::Acquire);
             let cons = (*self.rx_ring.consumer).load(Ordering::Relaxed);
-            
+
             let available = prod.wrapping_sub(cons);
             let count = std::cmp::min(available as usize, max_packets);
-            
-            // Note: In a production Linux build, we would use a pre-allocated 
+
+            // Note: In a production Linux build, we would use a pre-allocated
             // stack array or caller-provided buffer to store the recycled addresses
             // to satisfy the zero-allocation mandate.
             let mut recycled_count = 0;
@@ -119,27 +130,27 @@ impl AfXdpDriver {
             for i in 0..count {
                 let idx = (cons.wrapping_add(i as u32)) & self.rx_ring.mask;
                 let desc = &*self.rx_ring.descriptors.add(idx as usize);
-                
+
                 let data_ptr = self.umem_base.add(desc.addr as usize);
                 let data = std::slice::from_raw_parts(data_ptr, desc.len as usize);
-                
+
                 let view = AfXdpPacketView {
                     data,
                     timestamp_ns: 0, // Placeholder
                     queue_id: self.queue_id,
                 };
-                
+
                 f(&view);
-                
+
                 // Replenish fill ring immediately
                 self.fill_ring.produce(&[desc.addr]);
                 recycled_count += 1;
             }
-            
+
             if recycled_count > 0 {
                 self.rx_ring.release(recycled_count as u32);
             }
-            
+
             recycled_count as usize
         }
     }
@@ -164,8 +175,16 @@ pub struct AfXdpPacketView<'a> {
 
 #[cfg(target_os = "linux")]
 impl<'a> PacketView for AfXdpPacketView<'a> {
-    fn timestamp_ns(&self) -> u64 { self.timestamp_ns }
-    fn data(&self) -> &[u8] { self.data }
-    fn ingress_ifindex(&self) -> Option<u32> { None } 
-    fn rss_queue_id(&self) -> Option<u16> { Some(self.queue_id) }
+    fn timestamp_ns(&self) -> u64 {
+        self.timestamp_ns
+    }
+    fn data(&self) -> &[u8] {
+        self.data
+    }
+    fn ingress_ifindex(&self) -> Option<u32> {
+        None
+    }
+    fn rss_queue_id(&self) -> Option<u16> {
+        Some(self.queue_id)
+    }
 }
