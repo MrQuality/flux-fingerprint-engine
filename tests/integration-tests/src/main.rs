@@ -38,7 +38,18 @@ async fn init_simulated_driver(_world: &mut EngineWorld, _driver_type: String) {
 
 #[given(expr = "the adversarial trace {string}")]
 async fn load_trace(world: &mut EngineWorld, path: String) {
-    world.injector = Some(PcapInjector::new(&path).expect("Failed to load PCAP"));
+    let resolved_path = if std::path::Path::new(&path).exists() {
+        path.clone()
+    } else if std::path::Path::new(&format!("../{}", path)).exists() {
+        format!("../{}", path)
+    } else {
+        format!("../../{}", path)
+    };
+    if !std::path::Path::new(&resolved_path).exists() {
+        let cwd = std::env::current_dir().unwrap();
+        panic!("PCAP NOT FOUND! CWD: {:?}, Path: {}, Resolved: {}", cwd, path, resolved_path);
+    }
+    world.injector = Some(PcapInjector::new(&resolved_path).expect("Failed to load PCAP"));
 }
 
 #[when(expr = "the engine ingests a packet from the trace")]

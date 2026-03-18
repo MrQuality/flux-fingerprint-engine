@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[[test]]
+name = "cucumber"
+path = "src/main.rs"
+harness = false
+
 [dependencies]
 flux-engine-core = { path = "../../crates/engine-core" }
 flux-pcap-injector = { path = "../../crates/test-utils/pcap-injector" }

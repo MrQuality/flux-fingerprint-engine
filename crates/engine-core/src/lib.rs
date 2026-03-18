@@ -1,4 +1,7 @@
 pub mod scratchpad;
+pub mod flow;
+
+pub use flow::{FlowKey, FlowEntry, FlowMap};
 
 /// Zero-copy abstraction for packet data derived from hardware-backed buffers.
 pub trait PacketView {
