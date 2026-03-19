@@ -45,7 +45,7 @@ Feature: TCP Reassembly & Flow Lifecycle (EXHAUSTIVE)
     Given a TCP flow in state "ClientHelloIncomplete"
     When the engine ingests a segment beyond the 64-block sequence window
     Then the flow must transition to "Impaired"
-    And the engine must signal "ExceededTrackingWindow"
+    And the engine must signal "ObfuscatedNetworkEnvelope"
 
   Scenario: Fragment Budget Exhaustion
     Given a TCP flow in state "ClientHelloIncomplete" with 8 existing segments
