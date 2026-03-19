@@ -146,8 +146,15 @@ async fn check_timestamp(world: &mut EngineWorld) {
 
 #[given(expr = "a simulated high-throughput packet stream")]
 async fn init_high_throughput(world: &mut EngineWorld) {
-    let pcap_path = "../../tests/fixtures/pcaps/baseline_empty.pcap";
-    world.injector = Some(PcapInjector::new(pcap_path).unwrap());
+    let path = "tests/fixtures/pcaps/baseline_empty.pcap";
+    let resolved_path = if std::path::Path::new(path).exists() {
+        path.to_string()
+    } else if std::path::Path::new(&format!("../{}", path)).exists() {
+        format!("../{}", path)
+    } else {
+        format!("../../{}", path)
+    };
+    world.injector = Some(PcapInjector::new(&resolved_path).unwrap());
 }
 
 #[when(expr = "the engine ingests 1000 packets")]

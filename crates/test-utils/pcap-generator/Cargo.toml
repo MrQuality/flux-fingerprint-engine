@@ -3,10 +3,6 @@ name = "flux-pcap-generator"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "flux-pcap-generator"
-path = "src/lib.rs"
-
 [dependencies]
 pcap-file = "2.0"
 etherparse = "0.13"
