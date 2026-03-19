@@ -32,18 +32,37 @@ Feature: Bounded TLS ClientHello Scanner
     Then the engine must signal "ECHVisibilityLimited"
     And ordinary JA3/JA4 fingerprinting must be suppressed
 
+  Scenario: Policy: Missing SNI and ALPN Stability
+    Given a valid TLS ClientHello without SNI or ALPN extensions
+    When the scanner processes the handshake
+    Then the scanner must return "Success"
+    And no SNI or ALPN fields should be extracted
+    And the flow state must transition to "Fingerprinted"
+
   Scenario: Fail-Closed: Malformed Nested Extension Length
     Given a valid TLS Handshake header
     And an extension vector claiming 100 bytes
-    And a nested extension (e.g. SNI) claiming 200 bytes (Exceeding parent)
+    And a nested extension (e.g. SNI) claiming 200 bytes \(Exceeding parent\)
+    When the scanner processes the handshake
+    Then the engine must signal "MalformedTls"
+    And the flow state must transition to "Impaired"
+
+  Scenario: Fail-Closed: Duplicate Extension Ambiguity
+    Given a TLS ClientHello with two "supported_groups" extensions
     When the scanner processes the handshake
     Then the engine must signal "MalformedTls"
     And the flow state must transition to "Impaired"
 
   Scenario: Fail-Closed: Not a ClientHello
-    Given a TLS Handshake message of type 0x02 (ServerHello)
+    Given a TLS Handshake message of type 0x02 \(ServerHello\)
     When the scanner processes the message
     Then the engine must signal "NotClientHello"
+    And the flow state must transition to "Impaired"
+
+  Scenario: Fail-Closed: Boundary Saturation \(Max Handshake\)
+    Given a TLS Handshake claiming a length of 32769 bytes \(Exceeding limit\)
+    When the scanner processes the record
+    Then the engine must signal "MalformedTls"
     And the flow state must transition to "Impaired"
 
   Scenario: Truncation: Incomplete Handshake
