@@ -118,6 +118,18 @@ impl ForensicScratchpadPool {
         None
     }
 
+    pub fn used_slots(&self, tier: ScratchpadTier) -> usize {
+        let masks: &[AtomicU64] = match tier {
+            ScratchpadTier::Tier1 => &self.tier1_masks,
+            ScratchpadTier::Tier2 => &self.tier2_masks,
+        };
+
+        masks
+            .iter()
+            .map(|mask| mask.load(Ordering::Acquire).count_ones() as usize)
+            .sum()
+    }
+
     fn get_mut_ptr(&self, tier: ScratchpadTier, idx: usize) -> *mut [u8] {
         unsafe {
             let (base, size) = match tier {

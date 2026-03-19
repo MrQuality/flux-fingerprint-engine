@@ -1,6 +1,6 @@
+use crate::scratchpad::{ForensicScratchpadPool, ScratchpadGuard, ScratchpadTier};
+use crate::{FlowOutcome, FlowState, LogicalByteView};
 use std::net::IpAddr;
-use crate::{FlowState, FlowOutcome, LogicalByteView};
-use crate::scratchpad::{ScratchpadGuard, ForensicScratchpadPool, ScratchpadTier};
 
 /// Canonical 5-tuple for flow identification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,50 +41,100 @@ impl<'a> ReassemblyBuffer<'a> {
     }
 
     /// Ingests a new TCP segment using First-Writer-Wins policy.
-    pub fn insert(&mut self, seq: u32, data: &[u8], pool: &'a ForensicScratchpadPool) -> Result<(), FlowOutcome> {
-        // Robust Window Check: allow 1KB of "pre-anchor" OOO data
-        let diff = seq.wrapping_sub(self.base_seq);
-        if diff > self.max_window && diff < 0xFFFFFC00 { // Outside 64KB fwd and 1KB back
+    pub fn insert(
+        &mut self,
+        seq: u32,
+        data: &[u8],
+        pool: &'a ForensicScratchpadPool,
+    ) -> Result<(), FlowOutcome> {
+        const MAX_PRE_ANCHOR_BYTES: u32 = 1024;
+        const MAX_UNCOVERED_SPANS: usize = 9;
+
+        if seq >= self.base_seq {
+            if seq - self.base_seq > self.max_window {
+                return Err(FlowOutcome::ObfuscatedNetworkEnvelope);
+            }
+        } else if self.base_seq - seq > MAX_PRE_ANCHOR_BYTES {
             return Err(FlowOutcome::ObfuscatedNetworkEnvelope);
         }
 
-        // 1. First-Writer-Wins (FWW) Policy
+        let seq_end = seq.wrapping_add(data.len() as u32);
+        let mut spans = [(0u32, 0u32); MAX_UNCOVERED_SPANS];
+        let mut span_count = 1;
+        spans[0] = (seq, seq_end);
+
+        // Subtract already-owned ranges and keep only uncovered spans.
         for interval in &self.intervals {
             let int_start = interval.seq_start;
             let int_end = int_start.wrapping_add(interval.len as u32);
-            let pkt_start = seq;
-            let pkt_end = pkt_start.wrapping_add(data.len() as u32);
+            let mut next_spans = [(0u32, 0u32); MAX_UNCOVERED_SPANS];
+            let mut next_count = 0;
 
-            let overlap = pkt_start.wrapping_sub(int_end) >= 0x80000000 && 
-                          int_start.wrapping_sub(pkt_end) >= 0x80000000;
+            for idx in 0..span_count {
+                let (span_start, span_end) = spans[idx];
+                if span_start >= span_end {
+                    continue;
+                }
 
-            if overlap { return Ok(()); }
+                let overlap_start = span_start.max(int_start);
+                let overlap_end = span_end.min(int_end);
+
+                if overlap_start >= overlap_end {
+                    next_spans[next_count] = (span_start, span_end);
+                    next_count += 1;
+                    continue;
+                }
+
+                if span_start < overlap_start {
+                    next_spans[next_count] = (span_start, overlap_start);
+                    next_count += 1;
+                }
+
+                if overlap_end < span_end {
+                    next_spans[next_count] = (overlap_end, span_end);
+                    next_count += 1;
+                }
+            }
+
+            spans = next_spans;
+            span_count = next_count;
+
+            if span_count == 0 {
+                return Ok(());
+            }
         }
 
-        // 2. Fragment Budget Check
-        if self.intervals.len() >= self.max_fragments {
+        if self.intervals.len() + span_count > self.max_fragments {
             return Err(FlowOutcome::ExceededFragmentBudget);
         }
 
-        // 3. Acquire Scratchpad & Copy
-        let slot = pool.acquire(ScratchpadTier::Tier1)
-            .ok_or(FlowOutcome::FingerprintSuppressedByBackpressure)?;
-        
-        let len = data.len().min(slot.len());
-        unsafe {
-            let dst = slot.as_ptr() as *mut u8;
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst, len);
+        for idx in 0..span_count {
+            let (span_start, span_end) = spans[idx];
+            let src_offset = span_start.wrapping_sub(seq) as usize;
+            let span_len = (span_end - span_start) as usize;
+            let slot = pool
+                .acquire(ScratchpadTier::Tier1)
+                .ok_or(FlowOutcome::FingerprintSuppressedByBackpressure)?;
+
+            let len = span_len.min(slot.len());
+            unsafe {
+                let dst = slot.as_ptr() as *mut u8;
+                std::ptr::copy_nonoverlapping(
+                    data[src_offset..src_offset + len].as_ptr(),
+                    dst,
+                    len,
+                );
+            }
+
+            self.intervals.push(SparseInterval {
+                seq_start: span_start,
+                len,
+                slot,
+            });
+            self.total_bytes += len;
         }
 
-        self.intervals.push(SparseInterval {
-            seq_start: seq,
-            len,
-            slot,
-        });
-        
         self.intervals.sort_by_key(|i| i.seq_start);
-        self.total_bytes += len;
-
         Ok(())
     }
 }
@@ -101,10 +151,10 @@ impl<'a> LogicalByteView for ReassemblyBuffer<'a> {
         for interval in &self.intervals {
             let int_start = interval.seq_start;
             let int_end = int_start.wrapping_add(interval.len as u32);
-            
+
             let start_diff = target_seq_start.wrapping_sub(int_start);
             let end_diff = int_end.wrapping_sub(target_seq_end);
-            
+
             if start_diff < 0x10000 && end_diff < 0x10000 {
                 let inner_offset = start_diff as usize;
                 return Some(&interval.slot[inner_offset..inner_offset + len]);
@@ -118,19 +168,27 @@ impl<'a> LogicalByteView for ReassemblyBuffer<'a> {
         let target_seq = self.base_seq.wrapping_add(offset as u32);
         let end_seq = target_seq.wrapping_add(dst.len() as u32);
 
+        // Intervals are sorted by sequence.
         for interval in &self.intervals {
             let int_start = interval.seq_start;
             let int_end = int_start.wrapping_add(interval.len as u32);
 
-            let overlap_start = if target_seq.wrapping_sub(int_start) < 0x80000000 { target_seq } else { int_start };
-            let overlap_end = if end_seq.wrapping_sub(int_end) > 0x80000000 { end_seq } else { int_end };
+            // [overlap_start, overlap_end)
+            let overlap_start = if target_seq > int_start {
+                target_seq
+            } else {
+                int_start
+            };
+            let overlap_end = if end_seq < int_end { end_seq } else { int_end };
 
-            if overlap_start.wrapping_sub(overlap_end) > 0x80000000 {
+            if overlap_start < overlap_end {
+                let dst_offset =
+                    overlap_start.wrapping_sub(self.base_seq.wrapping_add(offset as u32)) as usize;
                 let src_offset = overlap_start.wrapping_sub(int_start) as usize;
-                let dst_offset = overlap_start.wrapping_sub(target_seq) as usize;
-                let copy_len = overlap_end.wrapping_sub(overlap_start) as usize;
-                
-                dst[dst_offset..dst_offset + copy_len].copy_from_slice(&interval.slot[src_offset..src_offset + copy_len]);
+                let copy_len = (overlap_end - overlap_start) as usize;
+
+                dst[dst_offset..dst_offset + copy_len]
+                    .copy_from_slice(&interval.slot[src_offset..src_offset + copy_len]);
                 bytes_copied += copy_len;
             }
         }
@@ -175,8 +233,15 @@ impl<'a> FlowEntry<'a> {
         None
     }
 
-    pub fn process_payload(&mut self, seq: u32, data: &[u8], pool: &'a ForensicScratchpadPool) -> Option<FlowOutcome> {
-        if data.is_empty() { return None; }
+    pub fn process_payload(
+        &mut self,
+        seq: u32,
+        data: &[u8],
+        pool: &'a ForensicScratchpadPool,
+    ) -> Option<FlowOutcome> {
+        if data.is_empty() {
+            return None;
+        }
 
         if self.state == FlowState::EstablishedTracking {
             self.state = FlowState::ClientHelloIncomplete;
@@ -192,7 +257,7 @@ impl<'a> FlowEntry<'a> {
                         return Some(FlowOutcome::Fingerprinted);
                     }
                     None
-                },
+                }
                 Err(outcome) => {
                     self.state = FlowState::Impaired;
                     Some(outcome)
@@ -231,13 +296,13 @@ impl TimingWheel {
     pub fn advance(&mut self, now_ns: u64) -> Vec<usize> {
         let target_tick = now_ns / self.tick_duration_ns;
         let mut potential_expired = Vec::new();
-        
+
         while self.current_tick < target_tick {
             self.current_tick += 1;
             let bucket_idx = self.current_tick as usize % self.num_buckets;
             potential_expired.extend(self.buckets[bucket_idx].drain(..));
         }
-        
+
         potential_expired
     }
 }
@@ -259,12 +324,16 @@ impl<'a> FlowMap<'a> {
             capacity: actual_capacity,
             probe_limit: 16,
             count: 0,
-            wheel: TimingWheel::new(4096, 10_000_000), 
-            default_timeout_ns: 100_000_000, 
+            wheel: TimingWheel::new(4096, 10_000_000),
+            default_timeout_ns: 100_000_000,
         }
     }
 
-    pub fn acquire(&mut self, key: &FlowKey, now_ns: u64) -> Result<&mut FlowEntry<'a>, FlowOutcome> {
+    pub fn acquire(
+        &mut self,
+        key: &FlowKey,
+        now_ns: u64,
+    ) -> Result<&mut FlowEntry<'a>, FlowOutcome> {
         let hash = self.calculate_hash(key);
         let mask = self.capacity - 1;
         let mut first_free = None;
@@ -309,12 +378,22 @@ impl<'a> FlowMap<'a> {
                 if entry.key == *key {
                     return Some(entry.state);
                 }
-            } else { break; }
+            } else {
+                break;
+            }
         }
         None
     }
 
-    pub fn process_packet(&mut self, key: &FlowKey, flags: u8, seq: u32, data: &[u8], now_ns: u64, pool: &'a ForensicScratchpadPool) -> Option<FlowOutcome> {
+    pub fn process_packet(
+        &mut self,
+        key: &FlowKey,
+        flags: u8,
+        seq: u32,
+        data: &[u8],
+        now_ns: u64,
+        pool: &'a ForensicScratchpadPool,
+    ) -> Option<FlowOutcome> {
         let entry_idx = {
             let hash = self.calculate_hash(key);
             let mask = self.capacity - 1;
@@ -326,7 +405,9 @@ impl<'a> FlowMap<'a> {
                         found_idx = Some(idx);
                         break;
                     }
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             found_idx
         };
@@ -334,16 +415,21 @@ impl<'a> FlowMap<'a> {
         let outcome = if let Some(idx) = entry_idx {
             let entry = self.entries[idx].as_mut().unwrap();
             let flag_outcome = entry.process_tcp_flags(flags, now_ns);
-            if flag_outcome.is_some() { flag_outcome }
-            else { entry.process_payload(seq, data, pool) }
+            if flag_outcome.is_some() {
+                flag_outcome
+            } else {
+                entry.process_payload(seq, data, pool)
+            }
         } else {
             let syn = (flags & 0x02) != 0;
             if syn {
                 match self.acquire(key, now_ns) {
                     Ok(_) => None,
-                    Err(e) => Some(e)
+                    Err(e) => Some(e),
                 }
-            } else { None }
+            } else {
+                None
+            }
         };
 
         if let Some(idx) = entry_idx {
@@ -361,16 +447,19 @@ impl<'a> FlowMap<'a> {
     pub fn cleanup_expired(&mut self, now_ns: u64) -> Vec<FlowOutcome> {
         let potential_indices = self.wheel.advance(now_ns);
         let mut outcomes = Vec::new();
-        
+
         for idx in potential_indices {
             let deadline = if let Some(ref entry) = self.entries[idx] {
-                if matches!(entry.state, FlowState::Aborted | FlowState::Fingerprinted | FlowState::Expired) {
-                    None 
+                if matches!(
+                    entry.state,
+                    FlowState::Aborted | FlowState::Fingerprinted | FlowState::Expired
+                ) {
+                    None
                 } else {
                     Some(entry.last_timestamp_ns + entry.timeout_ns)
                 }
             } else {
-                None 
+                None
             };
 
             if let Some(dl) = deadline {
@@ -384,7 +473,7 @@ impl<'a> FlowMap<'a> {
                 }
             }
         }
-        
+
         outcomes
     }
 
@@ -422,6 +511,22 @@ mod tests {
         let mut buf = [0u8; 10];
         rb.copy_to(0, &mut buf);
         assert_eq!(&buf[0..5], b"HELLO");
+    }
+
+    #[test]
+    fn test_partial_overlap_keeps_first_writer_and_appends_uncovered_suffix() {
+        let pool = ForensicScratchpadPool::new();
+        let mut rb = ReassemblyBuffer::new(1000);
+
+        rb.insert(1000, &[b'A'; 100], &pool).unwrap();
+        rb.insert(1050, &[b'B'; 100], &pool).unwrap();
+
+        let mut overlap = [0u8; 1];
+        let mut suffix = [0u8; 1];
+        assert_eq!(rb.copy_to(50, &mut overlap), 1);
+        assert_eq!(rb.copy_to(100, &mut suffix), 1);
+        assert_eq!(overlap[0], b'A');
+        assert_eq!(suffix[0], b'B');
     }
 
     #[test]
