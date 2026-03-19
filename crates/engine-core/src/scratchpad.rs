@@ -33,6 +33,15 @@ pub struct ScratchpadGuard<'a> {
     data: *mut [u8],
 }
 
+impl<'a> std::fmt::Debug for ScratchpadGuard<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScratchpadGuard")
+            .field("tier", &self.tier)
+            .field("slot_idx", &self.slot_idx)
+            .finish()
+    }
+}
+
 impl<'a> Deref for ScratchpadGuard<'a> {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
@@ -107,6 +116,18 @@ impl ForensicScratchpadPool {
         self.scratchpad_exhaustion_total
             .fetch_add(1, Ordering::Relaxed);
         None
+    }
+
+    pub fn used_slots(&self, tier: ScratchpadTier) -> usize {
+        let masks: &[AtomicU64] = match tier {
+            ScratchpadTier::Tier1 => &self.tier1_masks,
+            ScratchpadTier::Tier2 => &self.tier2_masks,
+        };
+
+        masks
+            .iter()
+            .map(|mask| mask.load(Ordering::Acquire).count_ones() as usize)
+            .sum()
     }
 
     fn get_mut_ptr(&self, tier: ScratchpadTier, idx: usize) -> *mut [u8] {

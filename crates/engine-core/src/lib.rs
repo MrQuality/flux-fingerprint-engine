@@ -1,4 +1,7 @@
+pub mod flow;
 pub mod scratchpad;
+
+pub use flow::{FlowEntry, FlowKey, FlowMap};
 
 /// Zero-copy abstraction for packet data derived from hardware-backed buffers.
 pub trait PacketView {
@@ -17,11 +20,50 @@ pub enum IngestionOutcome {
     UnsupportedProtocol,
 }
 
+/// Canonical TCP states defined in MP-001.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FlowState {
+    SynSeen,
+    SynAckSeen,
+    EstablishedTracking,
+    ClientHelloIncomplete,
+    Fingerprinted,
+    Impaired,
+    Aborted,
+    Expired,
+}
+
+/// Canonical failure and completion outcomes defined in MP-001.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum FlowOutcome {
+    Fingerprinted,
+    IncompleteTimedOut,
+    CollisionDropped,
+    AbortedByFin,
+    AbortedByRst,
+    ExceededFragmentBudget,
+    ExceededTrackingWindow,
+    FingerprintSuppressedByBackpressure,
+    UnsupportedTimingSource,
+    ObfuscatedNetworkEnvelope,
+}
+
+/// Zero-copy abstraction for reading discontiguous reassembled segments.
+pub trait LogicalByteView {
+    /// Total bytes currently reassembled in logical sequence.
+    fn len(&self) -> usize;
+    /// Borrow a specific byte range if contiguous, or None if it spans slots.
+    fn get_contiguous(&self, offset: usize, len: usize) -> Option<&[u8]>;
+    /// Copy logical range into a caller-provided buffer (Fallback).
+    fn copy_to(&self, offset: usize, dst: &mut [u8]) -> usize;
+}
+
 /// A bounded, single-pass scanner for the network envelope.
 pub struct EnvelopeScanner;
 
 impl EnvelopeScanner {
     const MAX_IPV6_EXT_HEADERS: u8 = 8;
+    const MAX_IPV6_EXT_BYTES: usize = 128; // MP-001 bound
 
     /// Traverses the L3 headers to locate the L4 (TCP) offset.
     ///
@@ -59,6 +101,7 @@ impl EnvelopeScanner {
                 let mut offset = 14 + 40;
                 let mut next_header = packet[14 + 6];
                 let mut ext_count = 0;
+                let mut ext_bytes = 0;
 
                 while Self::is_ipv6_extension(next_header) {
                     if ext_count >= Self::MAX_IPV6_EXT_HEADERS {
@@ -71,6 +114,11 @@ impl EnvelopeScanner {
                     let ext_len = (packet[offset + 1] as usize + 1) * 8;
                     if packet.len() < offset + ext_len {
                         return IngestionOutcome::MalformedProtocolHeader;
+                    }
+
+                    ext_bytes += ext_len;
+                    if ext_bytes > Self::MAX_IPV6_EXT_BYTES {
+                        return IngestionOutcome::ObfuscatedNetworkEnvelope;
                     }
 
                     next_header = packet[offset];
