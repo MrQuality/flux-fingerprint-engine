@@ -72,6 +72,24 @@ Feature: TCP Reassembly & Flow Lifecycle (EXHAUSTIVE)
     Then the engine must transition to "Impaired"
     And the engine must signal "ObfuscatedNetworkEnvelope"
 
+  Scenario: Detect ECH Outer (Impaired Transition)
+    Given a TCP flow in state "EstablishedTracking"
+    When the engine ingests a TLS ClientHello with ECH Outer extension
+    Then the FlowState must transition to "Impaired"
+    And the engine must signal "ECHVisibilityLimited"
+
+  Scenario: Malformed TLS Record (Impaired Transition)
+    Given a TCP flow in state "EstablishedTracking"
+    When the engine ingests a malformed TLS record
+    Then the FlowState must transition to "Impaired"
+    And the engine must signal "MalformedTls"
+
+  Scenario: Not a ClientHello Handshake (Impaired Transition)
+    Given a TCP flow in state "EstablishedTracking"
+    When the engine ingests a TLS ServerHello instead of ClientHello
+    Then the FlowState must transition to "Impaired"
+    And the engine must signal "NotClientHello"
+
   Scenario: Unsupported Timing Source Gating
     Given an engine initialization attempt on an unsupported CPU (Non-TSC-Safe)
     When the flow engine attempts to bind the Timing Wheel
