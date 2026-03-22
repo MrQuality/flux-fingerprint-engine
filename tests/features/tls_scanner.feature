@@ -30,6 +30,7 @@ Feature: Bounded TLS ClientHello Scanner
     Given a TLS ClientHello containing the "encrypted_client_hello" extension
     When the scanner processes the handshake
     Then the engine must signal "ECHVisibilityLimited"
+    And the flow state must transition to "Impaired"
     And ordinary JA3/JA4 fingerprinting must be suppressed
 
   Scenario: Policy: Missing SNI and ALPN Stability
@@ -38,6 +39,21 @@ Feature: Bounded TLS ClientHello Scanner
     Then the scanner must return "Success"
     And no SNI or ALPN fields should be extracted
     And the flow state must transition to "Fingerprinted"
+
+  Scenario: Extraction: Cryptographic Parameter Raw View
+    Given a TLS ClientHello with specific crypto parameters
+    When the scanner processes the handshake
+    Then the raw extraction must include:
+      | sub_vector           | expected_count |
+      | supported_groups     | 4              |
+      | signature_algorithms | 8              |
+      | ec_point_formats     | 1              |
+
+  Scenario: Extraction: Unknown Extension Preservation
+    Given a TLS ClientHello with an unknown extension ID 0x9999
+    When the scanner processes the handshake
+    Then the unknown extension must be preserved in the raw extraction list
+    And the scanner must return "Success"
 
   Scenario: Fail-Closed: Malformed Nested Extension Length
     Given a valid TLS Handshake header

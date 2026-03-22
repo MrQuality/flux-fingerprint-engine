@@ -17,7 +17,8 @@ Feature: TCP Reassembly & Flow Lifecycle (EXHAUSTIVE)
   Scenario: Out-of-order segment logical reassembly
     Given a TCP flow in state "EstablishedTracking"
     When the engine ingests a packet with sequence 1001 and length 50
-    And the engine ingests a packet with sequence 951 and length 50 (Out-of-Order)
+    Then the LogicalByteView length must be equal to the contiguous prefix only
+    When the engine ingests a packet with sequence 951 and length 50 (Out-of-Order)
     Then the FlowState must transition to "ClientHelloIncomplete"
     And the LogicalByteView at offset 0 must match the payload of sequence 951
 
@@ -45,7 +46,7 @@ Feature: TCP Reassembly & Flow Lifecycle (EXHAUSTIVE)
     Given a TCP flow in state "ClientHelloIncomplete"
     When the engine ingests a segment beyond the 64-block sequence window
     Then the flow must transition to "Impaired"
-    And the engine must signal "ObfuscatedNetworkEnvelope"
+    And the engine must signal "ExceededTrackingWindow"
 
   Scenario: Fragment Budget Exhaustion
     Given a TCP flow in state "ClientHelloIncomplete" with 8 existing segments
@@ -67,10 +68,10 @@ Feature: TCP Reassembly & Flow Lifecycle (EXHAUSTIVE)
     And the engine must signal "IncompleteTimedOut"
 
   Scenario: Truncation on Ambiguous Lengths (Fail-Closed)
-    Given a TCP flow in state "ClientHelloIncomplete"
+    Given a TCP flow in state "EstablishedTracking"
     When the engine ingests a TLS record with a claimed length larger than the tracking window
     Then the engine must transition to "Impaired"
-    And the engine must signal "ObfuscatedNetworkEnvelope"
+    And the engine must signal "MalformedTls"
 
   Scenario: Detect ECH Outer (Impaired Transition)
     Given a TCP flow in state "EstablishedTracking"

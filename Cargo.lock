@@ -250,7 +250,7 @@ dependencies = [
  "drain_filter_polyfill",
  "either",
  "futures",
- "gherkin",
+ "gherkin 0.14.0",
  "globwalk",
  "humantime",
  "inventory",
@@ -405,6 +405,7 @@ dependencies = [
  "cucumber",
  "flux-engine-core",
  "flux-pcap-injector",
+ "gherkin 0.13.0",
  "stats_alloc",
  "tokio",
 ]
@@ -540,6 +541,23 @@ dependencies = [
 
 [[package]]
 name = "gherkin"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e8f8f49b2b547ec22cc4d99f3bf30d4889ef0dbaa231c0736eeaf20efb5a38e"
+dependencies = [
+ "heck 0.4.1",
+ "peg",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 1.0.109",
+ "textwrap",
+ "thiserror",
+ "typed-builder 0.10.0",
+]
+
+[[package]]
+name = "gherkin"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20b79820c0df536d1f3a089a2fa958f61cb96ce9e0f3f8f507f5a31179567755"
@@ -552,7 +570,7 @@ dependencies = [
  "syn 2.0.117",
  "textwrap",
  "thiserror",
- "typed-builder",
+ "typed-builder 0.15.2",
 ]
 
 [[package]]
@@ -1204,6 +1222,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "typed-builder"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89851716b67b937e393b3daa8423e67ddfc4bbbf1654bcf05488e95e0828db0c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

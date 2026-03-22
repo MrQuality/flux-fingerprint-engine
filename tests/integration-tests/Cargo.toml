@@ -10,3 +10,4 @@ flux-pcap-injector = { path = "../../crates/test-utils/pcap-injector" }
 cucumber = "0.20"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 stats_alloc = "0.1"
+gherkin = "0.13"
